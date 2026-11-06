@@ -73,3 +73,41 @@ func TestNestedFuseTraversal(t *testing.T) {
 		t.Errorf("init.d listing = %+v", deep)
 	}
 }
+
+func TestMountServesHardlinkChain(t *testing.T) {
+	st, err := store.Open(t.TempDir() + "/st")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash, err := st.PutBlob([]byte("aa11"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &store.Manifest{Name: "t"}
+	m.Files = []store.FileEntry{
+		{Path: "a.txt", Size: 5, Mode: 0o644, Kind: store.KindFile, Hash: hash},
+		{Path: "b.txt", Mode: 0o644, Kind: store.KindLink, Link: "a.txt"},
+		{Path: "c.txt", Mode: 0o644, Kind: store.KindLink, Link: "b.txt"},
+		{Path: "x", Mode: 0o644, Kind: store.KindLink, Link: "x"},
+	}
+	tr := NewTree(st, m)
+	// The end of a three-link chain serves the base file's content.
+	ce, ok := tr.File("c.txt")
+	if !ok {
+		t.Fatal("c.txt not in tree")
+	}
+	data, err := tr.ReadFile(&ce)
+	if err != nil {
+		t.Fatalf("chain read: %v", err)
+	}
+	if string(data) != "aa11" {
+		t.Errorf("chain served %q", data)
+	}
+	xe, ok := tr.File("x")
+	if !ok {
+		t.Fatal("x not in tree")
+	}
+	if _, err := tr.ReadFile(&xe); err == nil {
+		t.Error("self-referencing hardlink was accepted")
+	}
+}

@@ -106,14 +106,23 @@ func (t *Tree) ReadFile(e *store.FileEntry) ([]byte, error) {
 	case store.KindCold:
 		return t.st.ReadColdEntry(e)
 	case store.KindLink:
-		tgt, ok := t.files[strings.TrimPrefix(path.Clean("/"+e.Link), "/")]
-		if !ok {
-			return nil, fmt.Errorf("%s: hardlink target %q is not in this image", e.Path, e.Link)
+		// A hardlink may point at another hardlink; follow the chain to
+		// its ultimate file and refuse cycles.
+		seen := map[string]bool{strings.TrimPrefix(path.Clean("/"+e.Path), "/"): true}
+		cur := *e
+		for cur.Kind == store.KindLink {
+			p := strings.TrimPrefix(path.Clean("/"+cur.Link), "/")
+			if seen[p] {
+				return nil, fmt.Errorf("%s: hardlink chain never reaches a file", e.Path)
+			}
+			seen[p] = true
+			tgt, ok := t.files[p]
+			if !ok {
+				return nil, fmt.Errorf("%s: hardlink target %q is not in this image", e.Path, cur.Link)
+			}
+			cur = tgt
 		}
-		if tgt.Kind == store.KindLink {
-			return nil, fmt.Errorf("%s: hardlink chains are not supported", e.Path)
-		}
-		return t.ReadFile(&tgt)
+		return t.ReadFile(&cur)
 	default:
 		return nil, fmt.Errorf("%s: kind %q has no readable contents", e.Path, e.Kind)
 	}
