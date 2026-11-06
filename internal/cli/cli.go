@@ -21,6 +21,9 @@ Usage:
   squish verify   [--store DIR] MANIFEST
   squish stats    [--store DIR] MANIFEST
   squish repack   [--store DIR] MANIFEST [--max-file N] [--min-group N] [--force]
+  squish delta    [--store DIR] [--min-file N] [--max-file N]
+  squish cold     [--store DIR] [--min-size N] MANIFEST
+  squish gc       [--store DIR]
 
 Store commands take a docker save archive (.tar or .tar.gz) or a directory.
 Manifests are named by their basename unless --name is given.`
@@ -42,6 +45,12 @@ func Run(args []string) error {
 		return cmdStats(rest)
 	case "repack":
 		return cmdRepack(rest)
+	case "delta":
+		return cmdDelta(rest)
+	case "cold":
+		return cmdCold(rest)
+	case "gc":
+		return cmdGC(rest)
 	case "help", "-h", "--help":
 		fmt.Println(usage)
 		return nil
@@ -188,4 +197,95 @@ func cmdRepack(args []string) error {
 	}
 	_, _, err = ops.Repack(st, m, *maxFile, *minGroup, *force)
 	return err
+}
+
+func openStoreAt(sdir string) (*store.Store, error) {
+	root := "."
+	if sdir != "" {
+		root = sdir
+	}
+	return store.Open(root)
+}
+
+func cmdDelta(args []string) error {
+	fs := flag.NewFlagSet("delta", flag.ExitOnError)
+	sdir := fs.String("store", "", "store root")
+	minFile := fs.Int("min-file", 32*1024, "only files of at least this many bytes are delta'd")
+	maxFile := fs.Int("max-file", 8*1024*1024, "only files up to this many bytes are delta'd")
+	fs.Parse(args)
+	if fs.NArg() != 0 {
+		return fmt.Errorf("delta: takes no arguments")
+	}
+	st, err := openStoreAt(*sdir)
+	if err != nil {
+		return err
+	}
+	names, err := st.ListManifests()
+	if err != nil {
+		return err
+	}
+	if len(names) < 2 {
+		return fmt.Errorf("delta: needs at least two manifests in the store (found %d)", len(names))
+	}
+	var ms []*store.Manifest
+	for _, n := range names {
+		m, err := st.LoadManifest(n)
+		if err != nil {
+			return err
+		}
+		ms = append(ms, m)
+	}
+	conv, saved, err := ops.DeltaPass(st, ms, int64(*minFile), int64(*maxFile))
+	if err != nil {
+		return err
+	}
+	removed, reclaimed, err := ops.GCAll(st)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("delta: %d entries converted, ~%d bytes saved; gc removed %d objects (%d bytes)\n", conv, saved, removed, reclaimed)
+	return nil
+}
+
+func cmdCold(args []string) error {
+	fs := flag.NewFlagSet("cold", flag.ExitOnError)
+	sdir := fs.String("store", "", "store root")
+	minSize := fs.Int("min-size", 1024*1024, "only files of at least this many bytes get cold frames")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		return fmt.Errorf("cold: need MANIFEST")
+	}
+	st, m, err := loadManifestAt(*sdir, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	conv, saved, err := ops.ColdPass(st, m, int64(*minSize))
+	if err != nil {
+		return err
+	}
+	removed, reclaimed, err := ops.GCAll(st)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("cold: %d entries converted, ~%d bytes saved; gc removed %d objects (%d bytes)\n", conv, saved, removed, reclaimed)
+	return nil
+}
+
+func cmdGC(args []string) error {
+	fs := flag.NewFlagSet("gc", flag.ExitOnError)
+	sdir := fs.String("store", "", "store root")
+	fs.Parse(args)
+	if fs.NArg() != 0 {
+		return fmt.Errorf("gc: takes no arguments")
+	}
+	st, err := openStoreAt(*sdir)
+	if err != nil {
+		return err
+	}
+	removed, reclaimed, err := ops.GCAll(st)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("gc: removed %d objects, reclaimed %d bytes\n", removed, reclaimed)
+	return nil
 }

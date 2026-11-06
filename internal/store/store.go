@@ -38,6 +38,8 @@ type FileEntry struct {
 	Hash   string `json:"hash,omitempty"`
 	Link   string `json:"link,omitempty"`
 	Frame  string `json:"frame,omitempty"`
+	Base   string `json:"base,omitempty"`
+	Filter string `json:"filter,omitempty"`
 	Offset int64  `json:"offset,omitempty"`
 	Clen   int64  `json:"clen,omitempty"`
 	Reason string `json:"reason,omitempty"`
@@ -216,6 +218,8 @@ func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
 func (s *Store) SaveManifest(m *Manifest) error {
 	seenBlob := map[string]bool{}
 	seenFrame := map[string]bool{}
+	seenDelta := map[string]bool{}
+	seenCold := map[string]bool{}
 	var stored int64
 	for _, e := range m.Files {
 		switch e.Kind {
@@ -223,6 +227,25 @@ func (s *Store) SaveManifest(m *Manifest) error {
 			if !seenBlob[e.Hash] {
 				seenBlob[e.Hash] = true
 				sz, err := s.BlobSize(e.Hash)
+				if err != nil {
+					return err
+				}
+				stored += sz
+			}
+		case KindDelta:
+			key := e.Hash + ">" + e.Base
+			if !seenDelta[key] {
+				seenDelta[key] = true
+				sz, err := s.DeltaSize(e.Hash, e.Base)
+				if err != nil {
+					return err
+				}
+				stored += sz
+			}
+		case KindCold:
+			if !seenCold[e.Hash] {
+				seenCold[e.Hash] = true
+				sz, err := s.ColdSize(e.Hash)
 				if err != nil {
 					return err
 				}

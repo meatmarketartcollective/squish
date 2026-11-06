@@ -25,16 +25,21 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 			if err := os.MkdirAll(dst, os.FileMode(e.Mode)|0o700); err != nil {
 				return files, err
 			}
-		case store.KindFile, store.KindFrame:
+		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold:
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return files, err
 			}
 			var data []byte
 			var err error
-			if e.Kind == store.KindFile {
+			switch e.Kind {
+			case store.KindFile:
 				data, err = st.ReadBlob(e.Hash)
-			} else {
+			case store.KindFrame:
 				data, err = st.ReadFrameFile(e.Frame, e.Offset, e.Clen)
+			case store.KindDelta:
+				data, err = st.ReadDelta(e.Hash, e.Base)
+			case store.KindCold:
+				data, err = st.ReadCold(e.Hash)
 			}
 			if err != nil {
 				return files, fmt.Errorf("%s: %w", e.Path, err)
@@ -103,6 +108,24 @@ func Verify(st *store.Store, m *store.Manifest) (checked, bad int, err error) {
 			}
 		case store.KindFrame:
 			data, err := st.ReadFrameFile(e.Frame, e.Offset, e.Clen)
+			if err != nil {
+				return checked, bad, fmt.Errorf("%s: %w", e.Path, err)
+			}
+			checked++
+			if int64(len(data)) != e.Size || store.HashBytes(data) != e.Hash {
+				bad++
+			}
+		case store.KindDelta:
+			data, err := st.ReadDelta(e.Hash, e.Base)
+			if err != nil {
+				return checked, bad, fmt.Errorf("%s: %w", e.Path, err)
+			}
+			checked++
+			if int64(len(data)) != e.Size || store.HashBytes(data) != e.Hash {
+				bad++
+			}
+		case store.KindCold:
+			data, err := st.ReadCold(e.Hash)
 			if err != nil {
 				return checked, bad, fmt.Errorf("%s: %w", e.Path, err)
 			}
