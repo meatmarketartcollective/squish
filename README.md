@@ -117,3 +117,21 @@ not preserved in v1; modes are.
 ## License
 
 MIT
+
+## The extra passes
+
+`squish delta` runs across every manifest in the store. Files that live at
+the same path in several images but with different content (library
+versions, config drift) get rewritten as delta frames against the most
+common version, and blobs nothing references anymore are dropped by the
+gc pass that follows. Reads stay byte-exact: a delta decodes against its
+base blob at materialize time.
+
+`squish cold MANIFEST` moves large ELF binaries (1 MiB and up by default)
+into xz frames with the BCJ filter matching the binary's own architecture
+(arm64 or x86). These are binaries your containers read once per image,
+never per run, so the slower decode buys real space. Needs an `xz` with
+BCJ support (`SQUISH_XZ` can point at one; Termux's xz has it).
+
+`squish gc` removes every blob, delta frame and cold frame no manifest
+references. Delta bases are protected.
