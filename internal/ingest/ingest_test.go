@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aloysiusvonfck/stackfold/internal/ops"
-	"github.com/aloysiusvonfck/stackfold/internal/store"
+	"github.com/aloysiusvonfck/squish/internal/ops"
+	"github.com/aloysiusvonfck/squish/internal/store"
 )
 
 // makeDockerSave builds a synthetic docker save archive with two layers:

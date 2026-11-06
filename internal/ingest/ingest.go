@@ -13,8 +13,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/aloysiusvonfck/stackfold/internal/elide"
-	"github.com/aloysiusvonfck/stackfold/internal/store"
+	"github.com/aloysiusvonfck/squish/internal/elide"
+	"github.com/aloysiusvonfck/squish/internal/store"
 )
 
 // IngestOptions controls one ingest run.

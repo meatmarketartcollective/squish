@@ -1,4 +1,4 @@
-// Package cli wires the stackfold command line.
+// Package cli wires the squish command line.
 package cli
 
 import (
@@ -8,19 +8,19 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aloysiusvonfck/stackfold/internal/ingest"
-	"github.com/aloysiusvonfck/stackfold/internal/ops"
-	"github.com/aloysiusvonfck/stackfold/internal/store"
+	"github.com/aloysiusvonfck/squish/internal/ingest"
+	"github.com/aloysiusvonfck/squish/internal/ops"
+	"github.com/aloysiusvonfck/squish/internal/store"
 )
 
-const usage = `stackfold - shrink Docker image contents with a per-file store
+const usage = `squish - shrink Docker image contents with a per-file store
 
 Usage:
-  stackfold store    [--store DIR] [--name NAME] [--no-elide] SOURCE...
-  stackfold materialize [--store DIR] MANIFEST OUTDIR [--no-hardlinks] [--verify]
-  stackfold verify   [--store DIR] MANIFEST
-  stackfold stats    [--store DIR] MANIFEST
-  stackfold repack   [--store DIR] MANIFEST [--max-file N] [--min-group N] [--force]
+  squish store    [--store DIR] [--name NAME] [--no-elide] SOURCE...
+  squish materialize [--store DIR] MANIFEST OUTDIR [--no-hardlinks] [--verify]
+  squish verify   [--store DIR] MANIFEST
+  squish stats    [--store DIR] MANIFEST
+  squish repack   [--store DIR] MANIFEST [--max-file N] [--min-group N] [--force]
 
 Store commands take a docker save archive (.tar or .tar.gz) or a directory.
 Manifests are named by their basename unless --name is given.`
@@ -55,14 +55,14 @@ func openStore(dir string) (*store.Store, error) {
 		dir = os.Getenv("STACKFOLD_STORE")
 	}
 	if dir == "" {
-		dir = ".stackfold"
+		dir = ".squish"
 	}
 	return store.Open(dir)
 }
 
 func cmdStore(args []string) error {
 	fs := flag.NewFlagSet("store", flag.ExitOnError)
-	sdir := fs.String("store", "", "store root (default $STACKFOLD_STORE or ./.stackfold)")
+	sdir := fs.String("store", "", "store root (default $STACKFOLD_STORE or ./.squish)")
 	name := fs.String("name", "", "manifest name (default source basename)")
 	noElide := fs.Bool("no-elide", false, "store regenerable files too")
 	fs.Parse(args)

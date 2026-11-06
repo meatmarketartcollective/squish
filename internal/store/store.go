@@ -1,4 +1,4 @@
-// Package store implements Stackfold's per-file content-addressed store.
+// Package store implements Squish's per-file content-addressed store.
 package store
 
 import (

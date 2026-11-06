@@ -1,7 +1,6 @@
-# Stackfold
+# Squish
 
-A companion tool for Docker that shrinks what container images take on disk,
-without making reads slower. It stores the extracted contents of every image
+Squish shrinks what your Docker containers take on disk, without making reads slower. It stores the extracted contents of every image
 once, per file, in a content-addressed store, and can rebuild any image tree
 byte-exactly from that store.
 
@@ -10,7 +9,7 @@ byte-exactly from that store.
 Docker already shares identical layer blobs between images. What it does not
 do is compress the extracted contents harder, deduplicate files that differ
 between blobs but repeat between them, or skip bytes that can simply be
-regenerated. Stackfold does all three, and every mechanism in it is one that
+regenerated. Squish does all three, and every mechanism in it is one that
 survived measurement on a 35-image, 6.19 GB corpus of official images:
 
 - **Per-file content-addressed store.** Every unique file's content is stored
@@ -42,7 +41,7 @@ dominate the residual, so it stays out of v1).
 Requires Go 1.23+:
 
 ```
-go install github.com/aloysiusvonfck/stackfold@latest
+go install github.com/aloysiusvonfck/squish@latest
 ```
 
 Release binaries for linux/amd64 and linux/arm64 are on the Releases page.
@@ -54,41 +53,41 @@ needed):
 
 ```
 docker save redis -o redis.tar
-stackfold store --store ~/stackfold redis.tar
+squish store --store ~/squish redis.tar
 ```
 
 Store an extracted layer directory instead:
 
 ```
-stackfold store --store ~/stackfold ~/layers/redis
+squish store --store ~/squish ~/layers/redis
 ```
 
 See what you saved:
 
 ```
-stackfold stats --store ~/stackfold redis
+squish stats --store ~/squish redis
 ```
 
 Rebuild the image tree byte-exactly (duplicates become hardlinks, so the
 rebuild costs almost nothing on disk):
 
 ```
-stackfold materialize --store ~/stackfold redis ./redis-tree
+squish materialize --store ~/squish redis ./redis-tree
 ```
 
 Check every stored byte still hashes back:
 
 ```
-stackfold verify --store ~/stackfold redis
+squish verify --store ~/squish redis
 ```
 
 Run the deep offline pass on small files (idle time job):
 
 ```
-stackfold repack --store ~/stackfold redis
+squish repack --store ~/squish redis
 ```
 
-The store root defaults to `$STACKFOLD_STORE`, then `./.stackfold`.
+The store root defaults to `$STACKFOLD_STORE`, then `./.squish`.
 Pass `--no-elide` to keep regenerable files.
 
 ## Store layout

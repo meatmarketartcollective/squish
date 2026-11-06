@@ -12,7 +12,7 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/aloysiusvonfck/stackfold/internal/store"
+	"github.com/aloysiusvonfck/squish/internal/store"
 )
 
 // Materialize reconstructs the image tree at out.

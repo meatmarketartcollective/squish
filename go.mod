@@ -1,4 +1,4 @@
-module github.com/aloysiusvonfck/stackfold
+module github.com/aloysiusvonfck/squish
 
 go 1.23
 

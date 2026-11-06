@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aloysiusvonfck/stackfold/internal/ingest"
-	"github.com/aloysiusvonfck/stackfold/internal/store"
+	"github.com/aloysiusvonfck/squish/internal/ingest"
+	"github.com/aloysiusvonfck/squish/internal/store"
 )
 
 func buildTree(t *testing.T) string {
@@ -27,7 +27,7 @@ func buildTree(t *testing.T) string {
 	for i := 0; i < 10; i++ {
 		mk("var/cache/apt/archives/pkg"+string(rune('a'+i))+".list", "deb http://deb.debian.org/debian bookworm main # package list "+strings.Repeat("x", 200))
 	}
-	mk("app/main.py", "import sys\n\n\ndef main():\n    print('hello stackfold')\n\n\nif __name__ == '__main__':\n    main()\n")
+	mk("app/main.py", "import sys\n\n\ndef main():\n    print('hello squish')\n\n\nif __name__ == '__main__':\n    main()\n")
 	mk("app/__pycache__/main.cpython-312.pyc", "fake-bytecode-never-stored")
 	mk("usr/share/doc/nginx/README", "docs about nginx")
 	os.Symlink("/etc/nginx/nginx.conf", filepath.Join(root, "etc", "nginx", "link.conf"))
