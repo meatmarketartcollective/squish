@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"syscall"
 
 	"bazil.org/fuse"
@@ -173,7 +174,10 @@ func Mount(st *store.Store, m *store.Manifest, mnt string) error {
 }
 
 func fusermountAvailable() bool {
-	for _, name := range []string{"fusermount", "fusermount3"} {
+	for _, name := range []string{"fusermount3", "fusermount"} {
+		if p, err := exec.LookPath(name); err == nil && p != "" {
+			return true
+		}
 		for _, dir := range []string{"/usr/bin", "/usr/local/bin", "/bin", "/sbin", "/usr/sbin"} {
 			p := dir + "/" + name
 			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
