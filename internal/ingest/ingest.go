@@ -250,7 +250,19 @@ func hasLayerSuffix(layerSet map[string]bool, n string) bool {
 
 func cleanName(n string) string {
 	n = strings.TrimPrefix(n, "./")
+	n = strings.TrimPrefix(n, "/")
 	return strings.TrimSuffix(n, "/")
+}
+
+// checkSafe rejects layer paths that would escape the layer root when
+// materialized ("../" components); such a layer is malformed or hostile.
+func checkSafe(n string) error {
+	for _, part := range strings.Split(n, "/") {
+		if part == ".." {
+			return fmt.Errorf("layer contains unsafe path %q", n)
+		}
+	}
+	return nil
 }
 
 func applyLayer(lr *tar.Reader, state map[string]store.FileEntry, m *store.Manifest, st *store.Store, opts IngestOptions) error {
@@ -265,6 +277,9 @@ func applyLayer(lr *tar.Reader, state map[string]store.FileEntry, m *store.Manif
 		n := cleanName(hdr.Name)
 		if n == "" {
 			continue
+		}
+		if err := checkSafe(n); err != nil {
+			return err
 		}
 		base := filepath.Base(n)
 		dir := filepath.Dir(n)

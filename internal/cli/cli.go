@@ -36,7 +36,10 @@ Manifests are named by their basename unless --name is given.`
 // flagsFirst moves flag tokens (with their values) ahead of positional
 // arguments, so "repack redis --max-file 4096" parses the same as
 // "repack --max-file 4096 redis".
-func flagsFirst(args []string) []string {
+// flagsFirst moves flag tokens (with their values) ahead of positional
+// arguments so flag.Parse accepts either order. Which flags take a value
+// comes from the command's own flagset, so every command is covered.
+func flagsFirst(fs *flag.FlagSet, args []string) []string {
 	var flags, pos []string
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -47,7 +50,7 @@ func flagsFirst(args []string) []string {
 				continue
 			}
 			flags = append(flags, a)
-			if valueFlags[name] && i+1 < len(args) {
+			if takesValue(fs, name) && i+1 < len(args) {
 				i++
 				flags = append(flags, args[i])
 			}
@@ -58,9 +61,13 @@ func flagsFirst(args []string) []string {
 	return append(flags, pos...)
 }
 
-var valueFlags = map[string]bool{
-	"store": true, "name": true, "max-file": true, "min-group": true,
-	"min-size": true, "min-file": true,
+func takesValue(fs *flag.FlagSet, name string) bool {
+	f := fs.Lookup(name)
+	if f == nil {
+		return false
+	}
+	bf, isBool := f.Value.(interface{ IsBoolFlag() bool })
+	return !(isBool && bf.IsBoolFlag())
 }
 
 func Run(args []string) error {
@@ -85,11 +92,11 @@ func Run(args []string) error {
 	case "cold":
 		return cmdCold(rest)
 	case "reclaim":
-		return cmdReclaim(args)
+		return cmdReclaim(rest)
 	case "restore":
-		return cmdRestore(args)
+		return cmdRestore(rest)
 	case "ls":
-		return cmdLs(args)
+		return cmdLs(rest)
 	case "gc":
 		return cmdGC(rest)
 	case "mount":
@@ -102,20 +109,22 @@ func Run(args []string) error {
 	}
 }
 
+func defaultStoreDir() string {
+	if dir := os.Getenv("SQUISH_STORE"); dir != "" {
+		return dir
+	}
+	if dir := os.Getenv("STACKFOLD_STORE"); dir != "" {
+		return dir
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, ".squish")
+	}
+	return ".squish"
+}
+
 func openStore(dir string) (*store.Store, error) {
 	if dir == "" {
-		dir = os.Getenv("SQUISH_STORE")
-	}
-	if dir == "" {
-		dir = os.Getenv("STACKFOLD_STORE")
-	}
-	if dir == "" {
-		home, err := os.UserHomeDir()
-		if err == nil && home != "" {
-			dir = filepath.Join(home, ".squish")
-		} else {
-			dir = ".squish"
-		}
+		dir = defaultStoreDir()
 	}
 	return store.Open(dir)
 }
@@ -125,7 +134,7 @@ func cmdStore(args []string) error {
 	sdir := fs.String("store", "", "store root (default $STACKFOLD_STORE or ./.squish)")
 	name := fs.String("name", "", "manifest name (default source basename)")
 	noElide := fs.Bool("no-elide", false, "store regenerable files too")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() == 0 {
 		return fmt.Errorf("store: need a source (docker save tar or directory)")
 	}
@@ -180,7 +189,7 @@ func cmdMaterialize(args []string) error {
 	sdir := fs.String("store", "", "store root")
 	noLinks := fs.Bool("no-hardlinks", false, "copy duplicates instead of hardlinking")
 	verify := fs.Bool("verify", false, "re-hash each file after writing")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 2 {
 		return fmt.Errorf("materialize: need MANIFEST and OUTDIR")
 	}
@@ -199,7 +208,7 @@ func cmdMaterialize(args []string) error {
 func cmdVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 1 {
 		return fmt.Errorf("verify: need MANIFEST")
 	}
@@ -221,7 +230,7 @@ func cmdVerify(args []string) error {
 func cmdStats(args []string) error {
 	fs := flag.NewFlagSet("stats", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 1 {
 		return fmt.Errorf("stats: need MANIFEST")
 	}
@@ -238,7 +247,7 @@ func cmdRepack(args []string) error {
 	maxFile := fs.Int("max-file", 256*1024, "only files up to this many bytes are grouped")
 	minGroup := fs.Int("min-group", 8, "minimum files per group")
 	force := fs.Bool("force", false, "delete blobs even when other manifests share the store")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 1 {
 		return fmt.Errorf("repack: need MANIFEST")
 	}
@@ -251,11 +260,10 @@ func cmdRepack(args []string) error {
 }
 
 func openStoreAt(sdir string) (*store.Store, error) {
-	root := "."
-	if sdir != "" {
-		root = sdir
+	if sdir == "" {
+		sdir = defaultStoreDir()
 	}
-	return store.Open(root)
+	return store.Open(sdir)
 }
 
 func cmdDelta(args []string) error {
@@ -263,7 +271,7 @@ func cmdDelta(args []string) error {
 	sdir := fs.String("store", "", "store root")
 	minFile := fs.Int("min-file", 32*1024, "only files of at least this many bytes are delta'd")
 	maxFile := fs.Int("max-file", 8*1024*1024, "only files up to this many bytes are delta'd")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 0 {
 		return fmt.Errorf("delta: takes no arguments")
 	}
@@ -302,7 +310,7 @@ func cmdCold(args []string) error {
 	fs := flag.NewFlagSet("cold", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
 	minSize := fs.Int("min-size", 1024*1024, "only files of at least this many bytes get cold frames")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 1 {
 		return fmt.Errorf("cold: need MANIFEST")
 	}
@@ -325,7 +333,7 @@ func cmdCold(args []string) error {
 func cmdGC(args []string) error {
 	fs := flag.NewFlagSet("gc", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 0 {
 		return fmt.Errorf("gc: takes no arguments")
 	}
@@ -344,7 +352,7 @@ func cmdGC(args []string) error {
 func cmdMount(args []string) error {
 	fs := flag.NewFlagSet("mount", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() != 2 {
 		return fmt.Errorf("mount: need MANIFEST MNT")
 	}

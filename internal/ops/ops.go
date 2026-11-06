@@ -22,7 +22,10 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 	byPath := map[string]store.FileEntry{}
 	var links []store.FileEntry // hardlinks, resolved after their targets
 	for _, e := range m.Files {
-		dst := filepath.Join(out, filepath.FromSlash(e.Path))
+		dst, jerr := safeJoin(out, e.Path)
+		if jerr != nil {
+			return files, jerr
+		}
 		switch e.Kind {
 		case store.KindDir:
 			if err := os.MkdirAll(dst, os.FileMode(e.Mode)|0o700); err != nil {
@@ -78,7 +81,10 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 	// hardlinks: their targets are on disk by now (tar hardlinks always
 	// point inside the same layer, so the target is in this manifest)
 	for _, le := range links {
-		dst := filepath.Join(out, filepath.FromSlash(le.Path))
+		dst, jerr := safeJoin(out, le.Path)
+		if jerr != nil {
+			return files, jerr
+		}
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return files, err
 		}
@@ -345,3 +351,16 @@ func encodeWithDict(data, dict []byte) ([]byte, error) {
 var _ = json.Marshal
 var _ = strings.TrimSpace
 var _ = io.Discard
+
+// safeJoin joins a manifest path under out, refusing anything that
+// would escape the output directory.
+func safeJoin(out, path string) (string, error) {
+	if path == "" {
+		return out, nil
+	}
+	rel := filepath.Clean(filepath.FromSlash(path))
+	if filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("%s: path escapes the output directory", path)
+	}
+	return filepath.Join(out, rel), nil
+}

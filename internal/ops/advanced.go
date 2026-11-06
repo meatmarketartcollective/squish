@@ -118,6 +118,9 @@ func DeltaPass(st *store.Store, manifests []*store.Manifest, minFile, maxFile in
 func referencedHashes(manifests []*store.Manifest) map[string]bool {
 	ref := map[string]bool{}
 	for _, m := range manifests {
+		if m.ImageConfig != "" {
+			ref[m.ImageConfig] = true
+		}
 		for _, e := range m.Files {
 			switch e.Kind {
 			case store.KindFile:

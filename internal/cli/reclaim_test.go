@@ -10,6 +10,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,6 +30,8 @@ images)
 save)
   # $2=-o $3=FILE $4=REF
   d=$(mktemp -d)
+  # real docker layout: the config is named <hash>.json and manifest.json
+  # points to it through its Config field
   printf '{"architecture":"amd64","os":"linux","config":{"Env":["PATH=/usr/bin"]}}' > "$d/config.json"
   mkdir -p "$d/layerdir/etc"
   echo hello > "$d/layerdir/etc/motd"
@@ -37,8 +40,10 @@ save)
   tar -cf "$d/layer1.tar" -C "$d/layerdir" etc
   mkdir -p "$d/layer1"
   mv "$d/layer1.tar" "$d/layer1/layer.tar"
-  printf '[{"Config":"config.json","RepoTags":["%%s"],"Layers":["layer1/layer.tar"]}]' "$4" > "$d/manifest.json"
-  tar -cf "$3" -C "$d" manifest.json config.json layer1
+  cfgsha=$(sha256sum "$d/config.json" | cut -d' ' -f1)
+  mv "$d/config.json" "$d/$cfgsha.json"
+  printf '[{"Config":"'"$cfgsha.json"'","RepoTags":["%%s"],"Layers":["layer1/layer.tar"]}]' "$4" > "$d/manifest.json"
+  tar -cf "$3" -C "$d" manifest.json "$cfgsha.json" layer1
   rm -rf "$d" ;;
 rmi)
   echo "rmi $2" >> %s ;;
@@ -118,5 +123,84 @@ func TestReclaimRestoreRoundTrip(t *testing.T) {
 	if _, err := os.Stat(stRoot + "/store/tmp/alpine:latest-image.tar"); err == nil {
 	} else if _, err2 := os.Stat(stRoot + "/tmp/alpine:latest-image.tar"); err2 == nil {
 		t.Errorf("load succeeded but the archive was not cleaned up")
+	}
+}
+
+// A save archive without a readable image config must never cost the
+// user their image: reclaim keeps the original and marks the entry HELD.
+func TestReclaimHeldWithoutConfig(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "docker")
+	log := filepath.Join(dir, "log")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %s
+case "$1" in
+images) printf 'alpine:latest|34.2MB\n' ;;
+save)
+  d=$(mktemp -d)
+  mkdir -p "$d/layerdir/etc"
+  echo hello > "$d/layerdir/etc/motd"
+  tar -cf "$d/layer1.tar" -C "$d/layerdir" etc
+  mkdir -p "$d/layer1"
+  mv "$d/layer1.tar" "$d/layer1/layer.tar"
+  printf '[{"RepoTags":["%%s"],"Layers":["layer1/layer.tar"]}]' "$4" > "$d/manifest.json"
+  tar -cf "$3" -C "$d" manifest.json layer1
+  rm -rf "$d" ;;
+rmi) echo "rmi $2" >> %s ;;
+*) echo "unknown $1"; exit 1 ;;
+esac`, log, log)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SQUISH_DOCKER", bin)
+	t.Setenv("SQUISH_STORE", dir+"/store")
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	rcErr := cmdReclaim([]string{"--image", "alpine:latest"})
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+	if rcErr != nil {
+		t.Fatalf("reclaim: %v", rcErr)
+	}
+	if !strings.Contains(string(out), "HELD alpine:latest") {
+		t.Errorf("reclaim did not hold the unconfigurable image; stdout:\n%s", out)
+	}
+	l := readLog(t, log)
+	if strings.Contains(l, "rmi alpine:latest") {
+		t.Errorf("reclaim removed an image it cannot restore; log:\n%s", l)
+	}
+	st, err := openStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := st.LoadManifest("alpine_latest")
+	if err != nil {
+		t.Fatalf("manifest: %v", err)
+	}
+	if m.ImageConfig != "" {
+		t.Errorf("held manifest carries an image config hash %q", m.ImageConfig)
+	}
+}
+
+// Run used to hand the whole argv to cmdRestore, so the subcommand word
+// itself was treated as an image name. This is the CLI-level regression.
+func TestRunRestoreDispatch(t *testing.T) {
+	bin, log := writeFakeDocker(t)
+	t.Setenv("SQUISH_DOCKER", bin)
+	t.Setenv("SQUISH_STORE", t.TempDir()+"/store")
+	if err := cmdReclaim(nil); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if err := Run([]string{"restore", "alpine:latest"}); err != nil {
+		t.Fatalf("restore via Run: %v", err)
+	}
+	if !strings.Contains(readLog(t, log), "LOAD-OK") {
+		t.Error("restore via Run did not reach docker load")
 	}
 }

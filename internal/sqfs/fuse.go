@@ -117,6 +117,13 @@ type fsFile struct {
 	read bool
 }
 
+func (n *fsNode) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
+	if e, ok := n.tree.File(n.path); ok && e.Kind == store.KindSymlink {
+		return e.Link, nil
+	}
+	return "", syscall.EINVAL
+}
+
 func (n *fsNode) Open(ctx context.Context, req *fuse.OpenRequest, resp *fuse.OpenResponse) (fusefs.Handle, error) {
 	e, ok := n.tree.File(n.path)
 	if !ok {

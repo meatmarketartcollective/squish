@@ -210,3 +210,38 @@ func TestHardlinkMaterialize(t *testing.T) {
 		t.Fatal("hardlink did not share an inode")
 	}
 }
+
+func TestGCKeepsImageConfig(t *testing.T) {
+	st, m, _, _ := roundtrip(t, false)
+	hash, err := st.PutBlob([]byte(`{"architecture":"amd64","os":"linux"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ImageConfig = hash
+	if err := st.SaveManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := GCAll(st); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if _, err := st.ReadBlob(hash); err != nil {
+		t.Fatalf("gc deleted the image config blob: %v", err)
+	}
+}
+
+func TestMaterializeRejectsEscape(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	hash, err := st.PutBlob([]byte("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &store.Manifest{Name: "evil"}
+	m.Files = append(m.Files, store.FileEntry{Path: "../evil.txt", Size: 7, Mode: 0o644, Kind: store.KindFile, Hash: hash})
+	out := t.TempDir()
+	if _, err := Materialize(st, m, out, false, false); err == nil {
+		t.Fatal("materialize accepted an escaping path")
+	}
+	if _, err := os.Stat(filepath.Join(filepath.Dir(out), "evil.txt")); err == nil {
+		t.Error("materialize wrote outside the output directory")
+	}
+}

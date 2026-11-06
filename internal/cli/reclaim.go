@@ -123,11 +123,14 @@ func extractDockerMeta(tarPath string) (config []byte, repoTags []string, err er
 		return nil, nil, err
 	}
 	defer f.Close()
-	var (
-		cfg     []byte
-		tags    []string
-		sawMeta bool
-	)
+
+	// Real docker save archives name the image config <hash>.json and
+	// point to it from manifest.json's Config field; older ones carry a
+	// literal config.json. Read the manifest first, then the config it
+	// names, falling back to config.json when there is no manifest.
+	var cfg []byte
+	var tags []string
+	cfgName := "config.json"
 	tr := tar.NewReader(f)
 	for {
 		h, err := tr.Next()
@@ -138,28 +141,51 @@ func extractDockerMeta(tarPath string) (config []byte, repoTags []string, err er
 			return nil, nil, err
 		}
 		name := strings.TrimPrefix(filepath.ToSlash(h.Name), "./")
-		switch {
-		case name == "config.json" && h.Typeflag == tar.TypeReg:
+		if name != "manifest.json" || h.Typeflag != tar.TypeReg {
+			continue
+		}
+		body, err := io.ReadAll(tr)
+		if err != nil {
+			return nil, nil, err
+		}
+		var entries []struct {
+			Config   string   `json:"Config"`
+			RepoTags []string `json:"RepoTags"`
+		}
+		if json.Unmarshal(body, &entries) == nil && len(entries) > 0 {
+			if entries[0].Config != "" {
+				cfgName = entries[0].Config
+			}
+			tags = entries[0].RepoTags
+		}
+		break // reclaim saves one image per archive
+	}
+
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, nil, err
+	}
+	tr = tar.NewReader(f)
+	sawCfg := false
+	for {
+		h, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, nil, err
+		}
+		name := strings.TrimPrefix(filepath.ToSlash(h.Name), "./")
+		if name == cfgName && h.Typeflag == tar.TypeReg {
 			cfg, err = io.ReadAll(tr)
 			if err != nil {
 				return nil, nil, err
 			}
-			sawMeta = true
-		case name == "manifest.json" && h.Typeflag == tar.TypeReg:
-			body, err := io.ReadAll(tr)
-			if err != nil {
-				return nil, nil, err
-			}
-			var entries []struct {
-				RepoTags []string `json:"RepoTags"`
-			}
-			if json.Unmarshal(body, &entries) == nil && len(entries) > 0 {
-				tags = entries[0].RepoTags
-			}
+			sawCfg = true
+			break
 		}
 	}
-	if !sawMeta {
-		return nil, nil, fmt.Errorf("%s has no config.json", filepath.Base(tarPath))
+	if !sawCfg {
+		return nil, nil, fmt.Errorf("no image config (%s) in %s", cfgName, filepath.Base(tarPath))
 	}
 	return cfg, tags, nil
 }
@@ -170,7 +196,7 @@ func cmdReclaim(args []string) error {
 	keep := fs.Bool("keep", false, "keep the original images after storing")
 	want := fs.String("image", "", "comma-separated image refs (default: every tagged image)")
 	minMB := fs.Int("min-size-mb", 0, "skip images smaller than this many MB")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 
 	bin := dockerBin()
 	var order []string
@@ -223,10 +249,12 @@ func cmdReclaim(args []string) error {
 			fmt.Printf("skip %s: %v\n", ref, err)
 			continue
 		}
-		cfg, tags, err := extractDockerMeta(tarPath)
-		if err == nil {
+		cfg, tags, metaErr := extractDockerMeta(tarPath)
+		if metaErr == nil {
 			if hash, err := st.PutBlob(cfg); err == nil {
 				m.ImageConfig = hash
+			} else {
+				metaErr = err
 			}
 			if len(tags) > 0 {
 				m.RepoTags = tags
@@ -235,6 +263,11 @@ func cmdReclaim(args []string) error {
 		m.Source = ref
 		if err := st.SaveManifest(m); err != nil {
 			return err
+		}
+		if metaErr != nil {
+			fmt.Printf("HELD %s: the image config could not be read (%v); the image is kept, nothing was removed\n", ref, metaErr)
+			os.Remove(tarPath)
+			continue
 		}
 		_, bad, verr := ops.Verify(st, m)
 		if verr != nil || bad > 0 {
@@ -388,7 +421,7 @@ func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root (default $SQUISH_STORE or ~/.squish)")
 	out := fs.String("out", "", "leave the rebuilt image archive here on failure (default inside the store)")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() == 0 {
 		return fmt.Errorf("restore: name the image to bring back (squish ls lists them)")
 	}
@@ -510,7 +543,7 @@ func writeDockerSaveArchive(path string, config []byte, layerPath string, repoTa
 func cmdLs(args []string) error {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root (default $SQUISH_STORE or ~/.squish)")
-	fs.Parse(flagsFirst(args))
+	fs.Parse(flagsFirst(fs, args))
 	st, err := openStore(*sdir)
 	if err != nil {
 		return err

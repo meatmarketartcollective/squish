@@ -174,3 +174,27 @@ func TestDedupAcrossCopies(t *testing.T) {
 		t.Fatalf("dedup savings = %d, want 1500", m.DedupBytes)
 	}
 }
+
+func TestIngestRejectsUnsafePath(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	if err := tw.WriteHeader(&tar.Header{Name: "../evil.txt", Typeflag: tar.TypeReg, Size: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte("evil!")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ws := t.TempDir() + "/st"
+	st, err := store.Open(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := tar.NewReader(&buf)
+	m := &store.Manifest{}
+	if err := applyLayer(tr, map[string]store.FileEntry{}, m, st, IngestOptions{}); err == nil {
+		t.Fatal("ingest accepted a layer path that escapes the layer root")
+	}
+}
