@@ -235,7 +235,11 @@ func secureMkdirAll(root int, rel string, mode os.FileMode) error {
 	if err != nil {
 		return err
 	}
-	defer func() { if fd >= 0 { unix.Close(fd) } }()
+	defer func() {
+		if fd >= 0 {
+			unix.Close(fd)
+		}
+	}()
 	for _, part := range parts {
 		e := unix.Mkdirat(fd, part, uint32(mode.Perm()))
 		if e != nil && e != unix.EEXIST {
