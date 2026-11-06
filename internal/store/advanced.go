@@ -13,6 +13,8 @@ import (
 	"strings"
 
 	"github.com/klauspost/compress/zstd"
+
+	"github.com/aloysiusvonfck/squish/internal/bcj"
 )
 
 const (
@@ -28,6 +30,63 @@ func (s *Store) DeltaPath(target, base string) string {
 // ColdPath is where an xz/BCJ cold frame lives.
 func (s *Store) ColdPath(hash string) string {
 	return filepath.Join(s.Root, "cold", hash+".xz")
+}
+
+// ColdNativePath is where a native (Go BCJ + zstd) cold frame lives.
+func (s *Store) ColdNativePath(hash string) string {
+	return filepath.Join(s.Root, "cold", hash+".zst")
+}
+
+// PutColdNative stores data as a native cold frame: the ARM64 BCJ branch
+// filter followed by zstd. No external tools needed, and decode speed
+// stays zstd-fast. Returns the stored size.
+func (s *Store) PutColdNative(hash string, data []byte) (int64, error) {
+	filtered := bcj.Encode(data)
+	enc, err := zstd.NewWriter(nil,
+		zstd.WithEncoderLevel(zstd.SpeedBestCompression),
+		zstd.WithWindowSize(1<<27),
+	)
+	if err != nil {
+		return 0, err
+	}
+	defer enc.Close()
+	comp := enc.EncodeAll(filtered, nil)
+	p := s.ColdNativePath(hash)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return 0, err
+	}
+	tmp := p + ".tmp" + RandomID(4)
+	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
+		return 0, err
+	}
+	return int64(len(comp)), os.Rename(tmp, p)
+}
+
+// ReadColdNative decodes a native cold frame.
+func (s *Store) ReadColdNative(hash string) ([]byte, error) {
+	comp, err := os.ReadFile(s.ColdNativePath(hash))
+	if err != nil {
+		return nil, err
+	}
+	dec, err := zstd.NewReader(nil, zstd.WithDecoderMaxWindow(1<<27))
+	if err != nil {
+		return nil, err
+	}
+	defer dec.Close()
+	filtered, err := dec.DecodeAll(comp, nil)
+	if err != nil {
+		return nil, err
+	}
+	return bcj.Decode(filtered), nil
+}
+
+// ReadColdEntry decodes a cold frame, dispatching on the entry's filter:
+// "bcj-arm64" is the native Go frame, anything else is an xz stream.
+func (s *Store) ReadColdEntry(e *FileEntry) ([]byte, error) {
+	if e.Filter == "bcj-arm64" {
+		return s.ReadColdNative(e.Hash)
+	}
+	return s.ReadCold(e.Hash)
 }
 
 // PutDelta compresses data against the base file's content and stores the
@@ -172,9 +231,13 @@ func (s *Store) ReadCold(hash string) ([]byte, error) {
 	return out.Bytes(), nil
 }
 
-// ColdSize returns the stored size of a cold frame.
+// ColdSize returns the stored size of a cold frame (native or xz).
 func (s *Store) ColdSize(hash string) (int64, error) {
-	fi, err := os.Stat(s.ColdPath(hash))
+	fi, err := os.Stat(s.ColdNativePath(hash))
+	if err == nil {
+		return fi.Size(), nil
+	}
+	fi, err = os.Stat(s.ColdPath(hash))
 	if err != nil {
 		return 0, err
 	}

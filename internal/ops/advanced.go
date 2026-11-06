@@ -179,13 +179,36 @@ func ColdPass(st *store.Store, m *store.Manifest, minSize int64) (converted int,
 		}
 		// reuse an existing frame for the same hash
 		if csz, statErr := st.ColdSize(e.Hash); statErr == nil {
+			nf := filter
+			if _, xzErr := os.Stat(st.ColdNativePath(e.Hash)); xzErr == nil {
+				nf = "bcj-arm64"
+			}
 			e.Kind = store.KindCold
-			e.Filter = filter
+			e.Filter = nf
 			e.Clen = csz
-			done[e.Hash] = res{filter, csz}
+			done[e.Hash] = res{nf, csz}
 			converted++
 			continue
 		}
+		if filter == "arm64" {
+			// native path: Go BCJ filter + zstd, no external tools
+			csz, err := st.PutColdNative(e.Hash, data)
+			if err != nil {
+				return converted, estSaved, err
+			}
+			if csz >= int64(len(data)) {
+				_ = os.Remove(st.ColdNativePath(e.Hash))
+				done[e.Hash] = res{filter, int64(len(data))} // no win; skip
+				continue
+			}
+			e.Kind = store.KindCold
+			e.Filter = "bcj-arm64"
+			e.Clen = csz
+			done[e.Hash] = res{"bcj-arm64", csz}
+			converted++
+			continue
+		}
+		// x86 ELFs still go through an xz with BCJ support
 		comp, err := store.CompressCold(filter, data)
 		if err != nil {
 			return converted, estSaved, err
@@ -294,12 +317,21 @@ func GCAll(st *store.Store) (removed int, reclaimed int64, err error) {
 		}
 		return nil
 	})
-	// cold frames
+	// cold frames (native .zst and xz .xz)
 	_ = filepath.Walk(filepath.Join(st.Root, "cold"), func(p string, fi os.FileInfo, werr error) error {
-		if werr != nil || fi.IsDir() || !strings.HasSuffix(p, ".xz") {
+		if werr != nil || fi.IsDir() {
 			return nil
 		}
-		h := strings.TrimSuffix(filepath.Base(p), ".xz")
+		base := filepath.Base(p)
+		var h string
+		switch {
+		case strings.HasSuffix(base, ".zst"):
+			h = strings.TrimSuffix(base, ".zst")
+		case strings.HasSuffix(base, ".xz"):
+			h = strings.TrimSuffix(base, ".xz")
+		default:
+			return nil
+		}
 		if _, e := hex.DecodeString(h); e != nil {
 			return nil
 		}

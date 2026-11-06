@@ -2,7 +2,6 @@ package ops
 
 import (
 	"bytes"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -145,9 +144,6 @@ func TestColdPass(t *testing.T) {
 			t.Skip("no xz binary available")
 		}
 	}
-	if !xzSupports(xz, "arm64") {
-		t.Skipf("xz at %q lacks the arm64 BCJ filter; verifying cold frames against a full xz instead", xz)
-	}
 	st, err := store.Open(filepath.Join(t.TempDir(), "s"))
 	if err != nil {
 		t.Fatal(err)
@@ -168,7 +164,7 @@ func TestColdPass(t *testing.T) {
 		t.Fatalf("want 1 converted, got %d (saved %d)", conv, saved)
 	}
 	e := m.Files[0]
-	if e.Kind != store.KindCold || e.Filter != "arm64" || e.Clen <= 0 || e.Clen >= e.Size {
+	if e.Kind != store.KindCold || e.Filter != "bcj-arm64" || e.Clen <= 0 || e.Clen >= e.Size {
 		t.Fatalf("cold entry looks wrong: %+v", e)
 	}
 	if checked, bad, err := Verify(st, m); err != nil || bad != 0 || checked != 1 {
@@ -194,7 +190,9 @@ func TestColdPass(t *testing.T) {
 	if got := elfFilter([]byte("not an elf")); got != "" {
 		t.Fatalf("non-ELF filter = %q", got)
 	}
-	fmt.Printf("cold: %d -> %d bytes (%.1f%%)\n", e.Size, e.Clen, 100*float64(e.Clen)/float64(e.Size))
+	if e.Filter == "bcj-arm64" {
+		t.Logf("native cold: %d -> %d bytes (%.1f%%)", e.Size, e.Clen, 100*float64(e.Clen)/float64(e.Size))
+	}
 }
 
 func xzSupports(xzPath, filter string) bool {

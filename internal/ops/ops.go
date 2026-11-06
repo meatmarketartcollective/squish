@@ -39,7 +39,7 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 			case store.KindDelta:
 				data, err = st.ReadDelta(e.Hash, e.Base)
 			case store.KindCold:
-				data, err = st.ReadCold(e.Hash)
+				data, err = st.ReadColdEntry(&e)
 			}
 			if err != nil {
 				return files, fmt.Errorf("%s: %w", e.Path, err)
@@ -125,7 +125,7 @@ func Verify(st *store.Store, m *store.Manifest) (checked, bad int, err error) {
 				bad++
 			}
 		case store.KindCold:
-			data, err := st.ReadCold(e.Hash)
+			data, err := st.ReadColdEntry(&e)
 			if err != nil {
 				return checked, bad, fmt.Errorf("%s: %w", e.Path, err)
 			}
