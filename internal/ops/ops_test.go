@@ -281,7 +281,7 @@ func TestMaterializeRefusesSymlinkParent(t *testing.T) {
 	m.Files = []store.FileEntry{
 		{Path: "var", Kind: store.KindDir, Mode: 0o755},
 		{Path: "var/run", Kind: store.KindSymlink, Link: outside},
-		{Path: "var/run/payload", Size: 7, Mode: 0o644, Kind: store.KindFile, Hash: hash},
+		{Path: "var/run/created/nested/payload", Size: 7, Mode: 0o644, Kind: store.KindFile, Hash: hash},
 	}
 	if _, err := Materialize(st, m, out, false, false); err == nil {
 		t.Fatal("materialize wrote through a symlinked parent")
@@ -292,6 +292,28 @@ func TestMaterializeRefusesSymlinkParent(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("files appeared outside the output directory: %v", entries)
+	}
+}
+
+func TestMaterializeRefusesSymlinkParentForSymlinkEntry(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	out := t.TempDir()
+	outside := t.TempDir()
+	m := &store.Manifest{Name: "symlink-parent"}
+	m.Files = []store.FileEntry{
+		{Path: "var", Kind: store.KindDir, Mode: 0o755},
+		{Path: "var/run", Kind: store.KindSymlink, Link: outside},
+		{Path: "var/run/created/link", Kind: store.KindSymlink, Link: "/tmp/target"},
+	}
+	if _, err := Materialize(st, m, out, false, false); err == nil {
+		t.Fatal("materialize created a symlink through a symlinked parent")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("entries appeared outside the output directory: %v", entries)
 	}
 }
 
