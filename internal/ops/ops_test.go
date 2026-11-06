@@ -171,3 +171,42 @@ func TestStats(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestHardlinkMaterialize(t *testing.T) {
+	st, err0 := store.Open(t.TempDir() + "/st")
+	if err0 != nil {
+		t.Fatal(err0)
+	}
+	content := []byte("the real content of the shared file")
+	hash, err := st.PutBlob(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the link entry sorts before its target, exercising the deferred pass
+	m := &store.Manifest{Name: "hl", Files: []store.FileEntry{
+		{Path: "app", Mode: 0o755, Kind: store.KindDir},
+		{Path: "app/hardlink.txt", Mode: 0o644, Kind: store.KindLink, Link: "app/original.txt"},
+		{Path: "app/original.txt", Size: int64(len(content)), Mode: 0o644, Kind: store.KindFile, Hash: hash},
+	}}
+	out := t.TempDir() + "/out"
+	files, err := Materialize(st, m, out, true, true)
+	if err != nil {
+		t.Fatalf("materialize: %v", err)
+	}
+	if files != 2 { // original + hardlink
+		t.Fatalf("files = %d, want 2", files)
+	}
+	a, err := os.ReadFile(out + "/app/original.txt")
+	if err != nil || string(a) != string(content) {
+		t.Fatalf("target wrong: %v %q", err, a)
+	}
+	b, err := os.ReadFile(out + "/app/hardlink.txt")
+	if err != nil || string(b) != string(content) {
+		t.Fatalf("hardlink wrong: %v %q", err, b)
+	}
+	ia, _ := os.Stat(out + "/app/original.txt")
+	ib, _ := os.Stat(out + "/app/hardlink.txt")
+	if !os.SameFile(ia, ib) {
+		t.Fatal("hardlink did not share an inode")
+	}
+}

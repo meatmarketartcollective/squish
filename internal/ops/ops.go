@@ -17,7 +17,9 @@ import (
 
 // Materialize reconstructs the image tree at out.
 func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, verifyEach bool) (files int, err error) {
-	first := map[string]string{} // hash -> first materialized path
+	first := map[string]string{}   // hash -> first materialized path
+	written := map[string]string{} // manifest path -> path on disk
+	var links []store.FileEntry    // hardlinks, resolved after their targets
 	for _, e := range m.Files {
 		dst := filepath.Join(out, filepath.FromSlash(e.Path))
 		switch e.Kind {
@@ -60,6 +62,7 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 				}
 				first[e.Hash] = dst
 			}
+			written[e.Path] = dst
 			if verifyEach {
 				if err := checkFile(dst, e); err != nil {
 					return files, err
@@ -74,9 +77,29 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 			if err := os.Symlink(e.Link, dst); err != nil {
 				return files, err
 			}
+			written[e.Path] = dst
+		case store.KindLink:
+			links = append(links, e)
 		case store.KindElided, store.KindSpecial:
 			// nothing on disk; parent dirs are created on demand
 		}
+	}
+	// hardlinks: their targets are on disk by now (tar hardlinks always
+	// point inside the same layer, so the target is in this manifest)
+	for _, le := range links {
+		dst := filepath.Join(out, filepath.FromSlash(le.Path))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+			return files, err
+		}
+		tgt, ok := written[le.Link]
+		if !ok {
+			return files, fmt.Errorf("%s: hardlink target %q was not materialized", le.Path, le.Link)
+		}
+		os.Remove(dst)
+		if err := os.Link(tgt, dst); err != nil {
+			return files, fmt.Errorf("%s: hardlink to %s: %w", le.Path, le.Link, err)
+		}
+		files++
 	}
 	return files, nil
 }

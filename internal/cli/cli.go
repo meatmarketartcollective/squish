@@ -26,6 +26,9 @@ Usage:
   squish cold     [--store DIR] [--min-size N] MANIFEST
   squish gc       [--store DIR]
   squish mount    [--store DIR] MANIFEST MNT
+  squish reclaim  [--store DIR] [--image A,B] [--keep] [--min-size-mb N]
+  squish restore  [--store DIR] [--out DIR] NAME...
+  squish ls       [--store DIR]
 
 Store commands take a docker save archive (.tar or .tar.gz) or a directory.
 Manifests are named by their basename unless --name is given.`
@@ -81,6 +84,12 @@ func Run(args []string) error {
 		return cmdDelta(rest)
 	case "cold":
 		return cmdCold(rest)
+	case "reclaim":
+		return cmdReclaim(args)
+	case "restore":
+		return cmdRestore(args)
+	case "ls":
+		return cmdLs(args)
 	case "gc":
 		return cmdGC(rest)
 	case "mount":
@@ -95,10 +104,18 @@ func Run(args []string) error {
 
 func openStore(dir string) (*store.Store, error) {
 	if dir == "" {
+		dir = os.Getenv("SQUISH_STORE")
+	}
+	if dir == "" {
 		dir = os.Getenv("STACKFOLD_STORE")
 	}
 	if dir == "" {
-		dir = ".squish"
+		home, err := os.UserHomeDir()
+		if err == nil && home != "" {
+			dir = filepath.Join(home, ".squish")
+		} else {
+			dir = ".squish"
+		}
 	}
 	return store.Open(dir)
 }

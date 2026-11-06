@@ -13,8 +13,8 @@ import (
 	"sort"
 	"time"
 
-	"golang.org/x/crypto/blake2b"
 	"github.com/klauspost/compress/zstd"
+	"golang.org/x/crypto/blake2b"
 )
 
 const StoreVersion = 1
@@ -46,16 +46,20 @@ type FileEntry struct {
 }
 
 type Manifest struct {
-	Version     int          `json:"version"`
-	Name        string       `json:"name"`
-	Created     time.Time    `json:"created"`
-	Source      string       `json:"source"`
-	Layers      []string     `json:"layers,omitempty"`
-	Files       []FileEntry  `json:"files"`
-	RawBytes    int64        `json:"raw_bytes"`
-	DedupBytes  int64        `json:"dedup_bytes"`
-	ElidedBytes int64        `json:"elided_bytes"`
-	StoredBytes int64        `json:"stored_bytes"`
+	Version     int         `json:"version"`
+	Name        string      `json:"name"`
+	Created     time.Time   `json:"created"`
+	Source      string      `json:"source"`
+	Layers      []string    `json:"layers,omitempty"`
+	Files       []FileEntry `json:"files"`
+	RawBytes    int64       `json:"raw_bytes"`
+	DedupBytes  int64       `json:"dedup_bytes"`
+	ElidedBytes int64       `json:"elided_bytes"`
+	StoredBytes int64       `json:"stored_bytes"`
+
+	// reclaim/restore: original image config blob hash and repo tags
+	ImageConfig string   `json:"image_config,omitempty"`
+	RepoTags    []string `json:"repo_tags,omitempty"`
 }
 
 type FrameIndex struct {

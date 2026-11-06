@@ -27,7 +27,7 @@ func NewTree(st *store.Store, m *store.Manifest) *Tree {
 		switch e.Kind {
 		case store.KindDir:
 			t.dirs[p] = true
-		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold, store.KindSymlink, store.KindElided, store.KindSpecial:
+		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold, store.KindSymlink, store.KindLink, store.KindElided, store.KindSpecial:
 			t.files[p] = e
 			for d := path.Dir(p); d != "." && d != "/"; d = path.Dir(d) {
 				t.dirs[d] = true
@@ -105,8 +105,15 @@ func (t *Tree) ReadFile(e *store.FileEntry) ([]byte, error) {
 		return t.st.ReadDelta(e.Hash, e.Base)
 	case store.KindCold:
 		return t.st.ReadColdEntry(e)
-	case store.KindElided:
-		return nil, fmt.Errorf("%s was elided at ingest and is not stored", e.Path)
+	case store.KindLink:
+		tgt, ok := t.files[strings.TrimPrefix(path.Clean("/"+e.Link), "/")]
+		if !ok {
+			return nil, fmt.Errorf("%s: hardlink target %q is not in this image", e.Path, e.Link)
+		}
+		if tgt.Kind == store.KindLink {
+			return nil, fmt.Errorf("%s: hardlink chains are not supported", e.Path)
+		}
+		return t.ReadFile(&tgt)
 	default:
 		return nil, fmt.Errorf("%s: kind %q has no readable contents", e.Path, e.Kind)
 	}

@@ -56,7 +56,7 @@ func fileMode(e store.FileEntry) os.FileMode {
 	switch e.Kind {
 	case store.KindSymlink:
 		return os.ModeSymlink | 0o777
-	case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold:
+	case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold, store.KindLink:
 		if e.Mode&0o111 != 0 {
 			return os.FileMode(e.Mode) | 0o555
 		}

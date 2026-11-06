@@ -38,57 +38,36 @@ dominate the residual, so it stays out of v1).
 
 ## Install
 
-Requires Go 1.23+:
+    curl -fsSL https://raw.githubusercontent.com/aloysiusvonfck/squish/master/install.sh | sh
 
-```
-go install github.com/aloysiusvonfck/squish@latest
-```
+That puts the right binary for your machine in ~/.local/bin. Prefer manual: grab a binary from [releases](https://github.com/aloysiusvonfck/squish/releases) (linux amd64/arm64, darwin arm64) and put it on your PATH.
 
-Release binaries for linux/amd64 and linux/arm64 are on the Releases page.
+## Quick start
+
+    squish reclaim                 # store every docker image, free the space
+    squish ls                      # what is stored, what it saves
+    squish restore alpine_latest   # bring an image back into docker
+    squish gc                      # after restores and cleanup
+
+`reclaim` saves each tagged image, verifies the stored copy byte-for-byte, and only then removes the original (pass --keep to leave images in place). `restore` rebuilds the image as a single squashed layer and loads it with docker. Names are the image ref with / : @ replaced by _.
 
 ## Use
 
-Store a docker save archive (the tarball Docker writes, no running daemon
-needed):
+  squish store    [--store DIR] [--name NAME] [--no-elide] SOURCE...
+  squish materialize [--store DIR] MANIFEST OUTDIR [--no-hardlinks] [--verify]
+  squish verify   [--store DIR] MANIFEST
+  squish stats    [--store DIR] MANIFEST
+  squish repack   [--store DIR] MANIFEST [--max-file N] [--min-group N] [--force]
+  squish delta    [--store DIR] [--min-file N] [--max-file N]
+  squish cold     [--store DIR] [--min-size N] MANIFEST
+  squish gc       [--store DIR]
+  squish mount    [--store DIR] MANIFEST MNT
+  squish reclaim  [--store DIR] [--image A,B] [--keep] [--min-size-mb N]
+  squish restore  [--store DIR] [--out DIR] NAME...
+  squish ls       [--store DIR]
 
-```
-docker save redis -o redis.tar
-squish store --store ~/squish redis.tar
-```
-
-Store an extracted layer directory instead:
-
-```
-squish store --store ~/squish ~/layers/redis
-```
-
-See what you saved:
-
-```
-squish stats --store ~/squish redis
-```
-
-Rebuild the image tree byte-exactly (duplicates become hardlinks, so the
-rebuild costs almost nothing on disk):
-
-```
-squish materialize --store ~/squish redis ./redis-tree
-```
-
-Check every stored byte still hashes back:
-
-```
-squish verify --store ~/squish redis
-```
-
-Run the deep offline pass on small files (idle time job):
-
-```
-squish repack --store ~/squish redis
-```
-
-The store root defaults to `$STACKFOLD_STORE`, then `./.squish`.
-Pass `--no-elide` to keep regenerable files.
+Store commands take a docker save archive (.tar or .tar.gz) or a directory.
+Manifests are named by their basename unless --name is given.
 
 ## Store layout
 
@@ -105,6 +84,8 @@ Manifests record path, size, mode and content hash for every file, so
 not preserved in v1; modes are.
 
 ## Honest caveats
+
+`restore` rebuilds the image as one squashed layer from the flattened store, verified structurally against docker's load format; the first real docker load still deserves a watch. Regenerable files elided at store time (caches, docs, locales, man pages) are not part of a restored image.
 
 - v1 has no transparent mount view yet: reading a file goes through
   `materialize` (or a future FUSE layer). The store's read cost is decompress
