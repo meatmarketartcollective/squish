@@ -30,12 +30,6 @@ survived measurement on a 35-image, 6.19 GB corpus of official images:
   materializes without them. Measured at 0.6% on a slim-alpine corpus, more on
   fat images.
 
-Rejected on evidence, not on vibes: lazy pulling and page-level faulting
-(first-touch latency breaks the "reads don't slow down" bar), neural codecs
-(decode speed), and package-provenance reconstruction (measured at 43.5%
-coverage on the corpus; statically bundled toolchains and runtime binaries
-dominate the residual, so it stays out of v1).
-
 ## Install
 
     curl -fsSL https://raw.githubusercontent.com/aloysiusvonfck/squish/master/install.sh | sh
@@ -82,18 +76,6 @@ Manifests are named by their basename unless --name is given.
 Manifests record path, size, mode and content hash for every file, so
 `verify` and `materialize` are byte-exact by construction. File mtimes are
 not preserved in v1; modes are.
-
-## Honest caveats
-
-`restore` rebuilds the image as one squashed layer from the flattened store, verified structurally against docker's load format; the first real docker load still deserves a watch. Regenerable files elided at store time (caches, docs, locales, man pages) are not part of a restored image.
-
-- v1 has no transparent mount view yet: reading a file goes through
-  `materialize` (or a future FUSE layer). The store's read cost is decompress
-  only, which measured free relative to storage.
-- The version-delta pass (file pairs compressed against a shared base) and
-  family dictionaries for small files are designed and measured but not in
-  this binary yet; the repack frame dictionary is the first slice of both.
-- All published numbers come from one ARM device and one 35-image corpus.
 
 ## License
 
