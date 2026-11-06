@@ -176,6 +176,9 @@ func Stats(st *store.Store, m *store.Manifest) error {
 	fmt.Printf("raw content     %d B\n", m.RawBytes)
 	fmt.Printf("elided (regen)  %d B\n", m.ElidedBytes)
 	fmt.Printf("dedup savings   %d B\n", m.DedupBytes)
+	if comp := m.RawBytes - m.ElidedBytes - m.DedupBytes - stored; comp > 0 {
+		fmt.Printf("compression     %d B\n", comp)
+	}
 	fmt.Printf("stored          %d B (%.1f%% of raw)\n", stored, pct)
 	return nil
 }
