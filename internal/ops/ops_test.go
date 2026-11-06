@@ -245,3 +245,114 @@ func TestMaterializeRejectsEscape(t *testing.T) {
 		t.Error("materialize wrote outside the output directory")
 	}
 }
+
+func TestVerifyChecksImageConfig(t *testing.T) {
+	st, m, _, _ := roundtrip(t, false)
+	hash, err := st.PutBlob([]byte(`{"architecture":"amd64","os":"linux","rootfs":{"diff_ids":["sha256:x"]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ImageConfig = hash
+	if err := st.SaveManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, bad, err := Verify(st, m); err != nil || bad != 0 {
+		t.Fatalf("clean config: bad=%d err=%v", bad, err)
+	}
+	// Tamper with the stored blob: a damaged config must fail verification.
+	blob := filepath.Join(st.Root, "blobs", hash[:2], hash+".zst")
+	if err := os.WriteFile(blob, []byte("garbage-not-zstd"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, bad, err := Verify(st, m); err == nil && bad == 0 {
+		t.Fatal("verify accepted a tampered image config blob")
+	}
+}
+
+func TestMaterializeRefusesSymlinkParent(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	hash, err := st.PutBlob([]byte("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	outside := t.TempDir()
+	m := &store.Manifest{Name: "esc"}
+	m.Files = []store.FileEntry{
+		{Path: "var", Kind: store.KindDir, Mode: 0o755},
+		{Path: "var/run", Kind: store.KindSymlink, Link: outside},
+		{Path: "var/run/payload", Size: 7, Mode: 0o644, Kind: store.KindFile, Hash: hash},
+	}
+	if _, err := Materialize(st, m, out, false, false); err == nil {
+		t.Fatal("materialize wrote through a symlinked parent")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("files appeared outside the output directory: %v", entries)
+	}
+}
+
+func TestMaterializeKeepsAbsoluteSymlink(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	out := t.TempDir()
+	m := &store.Manifest{Name: "sym"}
+	m.Files = []store.FileEntry{
+		{Path: "usr", Kind: store.KindDir, Mode: 0o755},
+		{Path: "usr/share", Kind: store.KindDir, Mode: 0o755},
+		{Path: "usr/share/zoneinfo", Kind: store.KindSymlink, Link: "/usr/lib/zoneinfo"},
+	}
+	if _, err := Materialize(st, m, out, false, false); err != nil {
+		t.Fatalf("materialize refused a legitimate absolute symlink: %v", err)
+	}
+	if got, err := os.Readlink(filepath.Join(out, "usr/share/zoneinfo")); err != nil || got != "/usr/lib/zoneinfo" {
+		t.Errorf("symlink = %q, err %v", got, err)
+	}
+}
+
+func TestHardlinkChain(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	hash, err := st.PutBlob([]byte("X"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := t.TempDir()
+	m := &store.Manifest{Name: "chain"}
+	m.Files = []store.FileEntry{
+		{Path: "a.txt", Size: 1, Mode: 0o644, Kind: store.KindFile, Hash: hash},
+		{Path: "b.txt", Mode: 0o644, Kind: store.KindLink, Link: "a.txt"},
+		{Path: "c.txt", Mode: 0o644, Kind: store.KindLink, Link: "b.txt"},
+	}
+	files, err := Materialize(st, m, out, true, false)
+	if err != nil {
+		t.Fatalf("chain materialize: %v", err)
+	}
+	if files != 3 {
+		t.Errorf("files = %d, want 3", files)
+	}
+	for _, n := range []string{"a.txt", "b.txt", "c.txt"} {
+		if _, err := os.Stat(filepath.Join(out, n)); err != nil {
+			t.Errorf("%s missing: %v", n, err)
+		}
+	}
+	a, _ := os.Stat(filepath.Join(out, "a.txt"))
+	c, _ := os.Stat(filepath.Join(out, "c.txt"))
+	if !os.SameFile(a, c) {
+		t.Error("chain end is not the same inode as the base file")
+	}
+}
+
+func TestHardlinkCycle(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	out := t.TempDir()
+	m := &store.Manifest{Name: "cyc"}
+	m.Files = []store.FileEntry{
+		{Path: "x", Mode: 0o644, Kind: store.KindLink, Link: "y"},
+		{Path: "y", Mode: 0o644, Kind: store.KindLink, Link: "x"},
+	}
+	if _, err := Materialize(st, m, out, true, false); err == nil {
+		t.Fatal("materialize accepted a hardlink cycle")
+	}
+}

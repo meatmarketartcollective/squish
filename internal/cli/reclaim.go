@@ -251,7 +251,14 @@ func cmdReclaim(args []string) error {
 		}
 		cfg, tags, metaErr := extractDockerMeta(tarPath)
 		if metaErr == nil {
-			if hash, err := st.PutBlob(cfg); err == nil {
+			var cfgCheck struct {
+				Rootfs struct {
+					DiffIds []string `json:"diff_ids"`
+				} `json:"rootfs"`
+			}
+			if !json.Valid(cfg) || json.Unmarshal(cfg, &cfgCheck) != nil || cfgCheck.Rootfs.DiffIds == nil {
+				metaErr = fmt.Errorf("the image config is not a valid docker image config")
+			} else if hash, err := st.PutBlob(cfg); err == nil {
 				m.ImageConfig = hash
 			} else {
 				metaErr = err

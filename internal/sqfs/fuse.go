@@ -117,6 +117,21 @@ type fsFile struct {
 	read bool
 }
 
+func (n *fsNode) Lookup(ctx context.Context, name string) (fusefs.Node, error) {
+	return lookup(n.tree, joinPath(n.path, name))
+}
+
+func (n *fsNode) ReadDir(ctx context.Context) ([]fuse.Dirent, error) {
+	return readdir(n.tree, n.path)
+}
+
+func joinPath(dir, name string) string {
+	if dir == "" || dir == "." {
+		return name
+	}
+	return dir + "/" + name
+}
+
 func (n *fsNode) Readlink(ctx context.Context, req *fuse.ReadlinkRequest) (string, error) {
 	if e, ok := n.tree.File(n.path); ok && e.Kind == store.KindSymlink {
 		return e.Link, nil

@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/aloysiusvonfck/squish/internal/ops"
 )
 
 func writeFakeDocker(t *testing.T) (bin string, log string) {
@@ -32,7 +34,7 @@ save)
   d=$(mktemp -d)
   # real docker layout: the config is named <hash>.json and manifest.json
   # points to it through its Config field
-  printf '{"architecture":"amd64","os":"linux","config":{"Env":["PATH=/usr/bin"]}}' > "$d/config.json"
+  printf '{"architecture":"amd64","os":"linux","config":{"Env":["PATH=/usr/bin"]},"rootfs":{"diff_ids":["sha256:old"]}}' > "$d/config.json"
   mkdir -p "$d/layerdir/etc"
   echo hello > "$d/layerdir/etc/motd"
   printf 'shared content' > "$d/layerdir/etc/shared.txt"
@@ -202,5 +204,126 @@ func TestRunRestoreDispatch(t *testing.T) {
 	}
 	if !strings.Contains(readLog(t, log), "LOAD-OK") {
 		t.Error("restore via Run did not reach docker load")
+	}
+}
+
+// An image config that is not valid docker JSON must cost the user
+// nothing: the image is kept and marked HELD.
+func TestReclaimHeldOnInvalidConfig(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "docker")
+	log := filepath.Join(dir, "log")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %s
+case "$1" in
+images) printf 'alpine:latest|34.2MB\n' ;;
+save)
+  d=$(mktemp -d)
+  printf 'this is not json at all' > "$d/config.json"
+  mkdir -p "$d/layerdir/etc"
+  echo hello > "$d/layerdir/etc/motd"
+  tar -cf "$d/layer1.tar" -C "$d/layerdir" etc
+  mkdir -p "$d/layer1"
+  mv "$d/layer1.tar" "$d/layer1/layer.tar"
+  printf '[{"Config":"config.json","RepoTags":["%%s"],"Layers":["layer1/layer.tar"]}]' "$4" > "$d/manifest.json"
+  tar -cf "$3" -C "$d" manifest.json config.json layer1
+  rm -rf "$d" ;;
+rmi) echo "rmi $2" >> %s ;;
+*) echo "unknown $1"; exit 1 ;;
+esac`, log, log)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SQUISH_DOCKER", bin)
+	t.Setenv("SQUISH_STORE", dir+"/store")
+
+	oldStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stdout = w
+	rcErr := cmdReclaim([]string{"--image", "alpine:latest"})
+	w.Close()
+	os.Stdout = oldStdout
+	out, _ := io.ReadAll(r)
+	if rcErr != nil {
+		t.Fatalf("reclaim: %v", rcErr)
+	}
+	if !strings.Contains(string(out), "HELD alpine:latest") {
+		t.Errorf("invalid config did not hold the image; stdout:\n%s", out)
+	}
+	if read := readLog(t, log); strings.Contains(read, "rmi alpine:latest") {
+		t.Errorf("reclaim removed an image with an invalid config; log:\n%s", read)
+	}
+}
+
+// GC must not break restore: reclaim, gc, then bring the image back.
+func TestRestoreAfterGC(t *testing.T) {
+	bin, log := writeFakeDocker(t)
+	t.Setenv("SQUISH_DOCKER", bin)
+	t.Setenv("SQUISH_STORE", t.TempDir()+"/store")
+	if err := cmdReclaim(nil); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	st, err := openStore("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := ops.GCAll(st); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+	if err := cmdRestore([]string{"alpine:latest"}); err != nil {
+		t.Fatalf("restore after gc: %v", err)
+	}
+	if !strings.Contains(readLog(t, log), "LOAD-OK") {
+		t.Error("restore after gc did not reach docker load")
+	}
+}
+
+// Every tag on an image must survive reclaim and restore.
+func TestRestoreCarriesAllTags(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "docker")
+	log := filepath.Join(dir, "log")
+	script := fmt.Sprintf(`#!/bin/sh
+echo "$@" >> %s
+case "$1" in
+images) printf 'alpine:latest|34.2MB\n' ;;
+save)
+  d=$(mktemp -d)
+  printf '{"architecture":"amd64","os":"linux","config":{},"rootfs":{"diff_ids":[]}}' > "$d/config.json"
+  mkdir -p "$d/layerdir/etc"
+  echo hello > "$d/layerdir/etc/motd"
+  tar -cf "$d/layer1.tar" -C "$d/layerdir" etc
+  mkdir -p "$d/layer1"
+  mv "$d/layer1.tar" "$d/layer1/layer.tar"
+  cfgsha=$(sha256sum "$d/config.json" | cut -d' ' -f1)
+  mv "$d/config.json" "$d/$cfgsha.json"
+  printf '[{"Config":"'"$cfgsha.json"'","RepoTags":["alpine:latest","alpine:v2"],"Layers":["layer1/layer.tar"]}]' > "$d/manifest.json"
+  tar -cf "$3" -C "$d" manifest.json "$cfgsha.json" layer1
+  rm -rf "$d" ;;
+rmi) echo "rmi $2" >> %s ;;
+load)
+  f="$3"
+  man=$(tar -xOf "$f" manifest.json)
+  echo "$man" | grep -q 'alpine:latest' || { echo "missing tag alpine:latest"; exit 1; }
+  echo "$man" | grep -q 'alpine:v2' || { echo "missing tag alpine:v2"; exit 1; }
+  echo "LOAD-OK" >> %s ;;
+*) echo "unknown $1"; exit 1 ;;
+esac`, log, log, log)
+	if err := os.WriteFile(bin, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SQUISH_DOCKER", bin)
+	t.Setenv("SQUISH_STORE", dir+"/store")
+	if err := cmdReclaim([]string{"--image", "alpine:latest"}); err != nil {
+		t.Fatalf("reclaim: %v", err)
+	}
+	if err := cmdRestore([]string{"alpine:latest"}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !strings.Contains(readLog(t, log), "LOAD-OK") {
+		t.Error("both tags did not survive the round trip")
 	}
 }

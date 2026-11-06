@@ -31,8 +31,14 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 			if err := os.MkdirAll(dst, os.FileMode(e.Mode)|0o700); err != nil {
 				return files, err
 			}
+			if err := ensureInsideOut(out, dst); err != nil {
+				return files, err
+			}
 		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold:
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+				return files, err
+			}
+			if err := ensureInsideOut(out, filepath.Dir(dst)); err != nil {
 				return files, err
 			}
 			data, err := readEntryData(st, e)
@@ -79,7 +85,27 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 		}
 	}
 	// hardlinks: their targets are on disk by now (tar hardlinks always
-	// point inside the same layer, so the target is in this manifest)
+	// point inside the same layer, so the target is in this manifest).
+	// A hardlink may point at another hardlink; resolve each chain to its
+	// ultimate non-link target and refuse cycles.
+	linkTarget := make(map[string]string, len(links))
+	for _, le := range links {
+		linkTarget[le.Path] = le.Link
+	}
+	resolveBase := func(path string) (string, bool) {
+		seen := map[string]bool{}
+		for {
+			if seen[path] {
+				return "", false
+			}
+			seen[path] = true
+			if t, isLink := linkTarget[path]; isLink {
+				path = t
+				continue
+			}
+			return path, true
+		}
+	}
 	for _, le := range links {
 		dst, jerr := safeJoin(out, le.Path)
 		if jerr != nil {
@@ -88,17 +114,24 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return files, err
 		}
-		tgt, ok := written[le.Link]
+		if err := ensureInsideOut(out, filepath.Dir(dst)); err != nil {
+			return files, err
+		}
+		base, ok := resolveBase(le.Link)
 		if !ok {
-			return files, fmt.Errorf("%s: hardlink target %q was not materialized", le.Path, le.Link)
+			return files, fmt.Errorf("%s: hardlink chain through %q never reaches a file", le.Path, le.Link)
+		}
+		tgt, ok := written[base]
+		if !ok {
+			return files, fmt.Errorf("%s: hardlink target %q was not materialized", le.Path, base)
 		}
 		os.Remove(dst)
 		if err := os.Link(tgt, dst); err != nil {
 			// linkless filesystem (Android FUSE and friends): fall
 			// back to writing the target's content
-			te, ok := byPath[le.Link]
+			te, ok := byPath[base]
 			if !ok {
-				return files, fmt.Errorf("%s: hardlink to %s: %w", le.Path, le.Link, err)
+				return files, fmt.Errorf("%s: hardlink to %s: %w", le.Path, base, err)
 			}
 			data, rerr := readEntryData(st, te)
 			if rerr != nil {
@@ -181,6 +214,16 @@ func Verify(st *store.Store, m *store.Manifest) (checked, bad int, err error) {
 			if int64(len(data)) != e.Size || store.HashBytes(data) != e.Hash {
 				bad++
 			}
+		}
+	}
+	if m.ImageConfig != "" {
+		data, err := st.ReadBlob(m.ImageConfig)
+		if err != nil {
+			return checked, bad, fmt.Errorf("image config: %w", err)
+		}
+		checked++
+		if store.HashBytes(data) != m.ImageConfig {
+			bad++
 		}
 	}
 	return checked, bad, nil
@@ -363,4 +406,24 @@ func safeJoin(out, path string) (string, error) {
 		return "", fmt.Errorf("%s: path escapes the output directory", path)
 	}
 	return filepath.Join(out, rel), nil
+}
+
+// ensureInsideOut refuses a directory whose real location (following any
+// symlinks) sits outside out, so writes can never escape through a
+// symlinked parent the layer itself created.
+func ensureInsideOut(out, dir string) error {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return err
+	}
+	outRes, err := filepath.EvalSymlinks(out)
+	if err != nil {
+		return err
+	}
+	outRes, _ = filepath.Abs(outRes)
+	resolved, _ = filepath.Abs(resolved)
+	if resolved != outRes && !strings.HasPrefix(resolved, outRes+string(filepath.Separator)) {
+		return fmt.Errorf("%s: resolves outside the output directory", dir)
+	}
+	return nil
 }
