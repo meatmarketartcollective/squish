@@ -19,7 +19,8 @@ import (
 func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, verifyEach bool) (files int, err error) {
 	first := map[string]string{}   // hash -> first materialized path
 	written := map[string]string{} // manifest path -> path on disk
-	var links []store.FileEntry    // hardlinks, resolved after their targets
+	byPath := map[string]store.FileEntry{}
+	var links []store.FileEntry // hardlinks, resolved after their targets
 	for _, e := range m.Files {
 		dst := filepath.Join(out, filepath.FromSlash(e.Path))
 		switch e.Kind {
@@ -31,18 +32,7 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return files, err
 			}
-			var data []byte
-			var err error
-			switch e.Kind {
-			case store.KindFile:
-				data, err = st.ReadBlob(e.Hash)
-			case store.KindFrame:
-				data, err = st.ReadFrameFile(e.Frame, e.Offset, e.Clen)
-			case store.KindDelta:
-				data, err = st.ReadDelta(e.Hash, e.Base)
-			case store.KindCold:
-				data, err = st.ReadColdEntry(&e)
-			}
+			data, err := readEntryData(st, e)
 			if err != nil {
 				return files, fmt.Errorf("%s: %w", e.Path, err)
 			}
@@ -63,6 +53,7 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 				first[e.Hash] = dst
 			}
 			written[e.Path] = dst
+			byPath[e.Path] = e
 			if verifyEach {
 				if err := checkFile(dst, e); err != nil {
 					return files, err
@@ -97,11 +88,39 @@ func Materialize(st *store.Store, m *store.Manifest, out string, useHardlinks, v
 		}
 		os.Remove(dst)
 		if err := os.Link(tgt, dst); err != nil {
-			return files, fmt.Errorf("%s: hardlink to %s: %w", le.Path, le.Link, err)
+			// linkless filesystem (Android FUSE and friends): fall
+			// back to writing the target's content
+			te, ok := byPath[le.Link]
+			if !ok {
+				return files, fmt.Errorf("%s: hardlink to %s: %w", le.Path, le.Link, err)
+			}
+			data, rerr := readEntryData(st, te)
+			if rerr != nil {
+				return files, rerr
+			}
+			if werr := os.WriteFile(dst, data, os.FileMode(le.Mode)); werr != nil {
+				return files, werr
+			}
 		}
 		files++
 	}
 	return files, nil
+}
+
+// readEntryData returns an entry's stored content; dir, symlink,
+// hardlink, elided and special entries have none.
+func readEntryData(st *store.Store, e store.FileEntry) ([]byte, error) {
+	switch e.Kind {
+	case store.KindFile:
+		return st.ReadBlob(e.Hash)
+	case store.KindFrame:
+		return st.ReadFrameFile(e.Frame, e.Offset, e.Clen)
+	case store.KindDelta:
+		return st.ReadDelta(e.Hash, e.Base)
+	case store.KindCold:
+		return st.ReadColdEntry(&e)
+	}
+	return nil, fmt.Errorf("%s: kind %q has no stored content", e.Path, e.Kind)
 }
 
 func checkFile(dst string, e store.FileEntry) error {
