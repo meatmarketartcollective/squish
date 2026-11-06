@@ -171,6 +171,12 @@ func ingestDockerSave(st *store.Store, path, name string, opts IngestOptions) (*
 	for _, e := range entries {
 		m.Layers = append(m.Layers, e.Layers...)
 	}
+	// Capture the image config so restore can rebuild a docker-loadable
+	// archive from a store-made manifest, not just reclaim-made ones.
+	var configName string
+	if len(entries) == 1 {
+		configName = cleanName(entries[0].Config)
+	}
 
 	// Pass 2: re-open and process each layer tar in order.
 	closeGz()
@@ -207,6 +213,26 @@ func ingestDockerSave(st *store.Store, path, name string, opts IngestOptions) (*
 			return nil, err
 		}
 		n := cleanName(hdr.Name)
+		if configName != "" && n == configName {
+			cfg, err := io.ReadAll(tr2)
+			if err != nil {
+				return nil, fmt.Errorf("%s: %w", n, err)
+			}
+			// Same validity bar reclaim applies before it will ever
+			// delete an image: the config must parse and carry diff_ids.
+			var cfgCheck struct {
+				Rootfs struct {
+					DiffIds []string `json:"diff_ids"`
+				} `json:"rootfs"`
+			}
+			if json.Valid(cfg) && json.Unmarshal(cfg, &cfgCheck) == nil && cfgCheck.Rootfs.DiffIds != nil {
+				if hash, perr := st.PutBlob(cfg); perr == nil {
+					m.ImageConfig = hash
+				}
+			}
+			io.Copy(io.Discard, tr2)
+			continue
+		}
 		if !layerSet[n] && !hasLayerSuffix(layerSet, n) {
 			io.Copy(io.Discard, tr2)
 			continue

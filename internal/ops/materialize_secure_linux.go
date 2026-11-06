@@ -188,6 +188,10 @@ func secureParent(root int, rel string, create bool) (int, string, error) {
 		return -1, "", err
 	}
 	for _, part := range parts[:len(parts)-1] {
+		if err := refuseSymlink(fd, part); err != nil {
+			unix.Close(fd)
+			return -1, "", err
+		}
 		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		if e == unix.ENOENT && create {
 			if e = unix.Mkdirat(fd, part, 0o755); e == nil || e == unix.EEXIST {
@@ -201,6 +205,25 @@ func secureParent(root int, rel string, create bool) (int, string, error) {
 		fd = next
 	}
 	return fd, parts[len(parts)-1], nil
+}
+
+// refuseSymlink errors when name, relative to dirfd, is a symlink. Some
+// kernels and sandboxes do not honor O_NOFOLLOW, so the walk checks every
+// component itself and never trusts the flag alone.
+func refuseSymlink(dirfd int, name string) error {
+	var st unix.Stat_t
+	if err := unix.Fstatat(dirfd, name, &st, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+		if err == unix.ENOENT {
+			// Not there yet: nothing to follow. Creation happens later,
+			// through the directory descriptor itself.
+			return nil
+		}
+		return err
+	}
+	if st.Mode&unix.S_IFMT == unix.S_IFLNK {
+		return fmt.Errorf("%s: refuses to follow a symlinked path component", name)
+	}
+	return nil
 }
 
 func secureMkdirAll(root int, rel string, mode os.FileMode) error {
@@ -217,6 +240,9 @@ func secureMkdirAll(root int, rel string, mode os.FileMode) error {
 		e := unix.Mkdirat(fd, part, uint32(mode.Perm()))
 		if e != nil && e != unix.EEXIST {
 			return e
+		}
+		if err := refuseSymlink(fd, part); err != nil {
+			return err
 		}
 		next, e := unix.Openat(fd, part, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 		if e != nil {
@@ -259,6 +285,9 @@ func secureRead(root int, rel string) ([]byte, error) {
 		return nil, err
 	}
 	defer unix.Close(parent)
+	if err := refuseSymlink(parent, name); err != nil {
+		return nil, err
+	}
 	fd, err := unix.Openat(parent, name, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
 	if err != nil {
 		return nil, err
@@ -290,6 +319,9 @@ func secureLink(root int, source, dest string) error {
 		return err
 	}
 	defer unix.Close(srcFD)
+	if err := refuseSymlink(srcFD, srcName); err != nil {
+		return err
+	}
 	dstFD, dstName, err := secureParent(root, dest, true)
 	if err != nil {
 		return err

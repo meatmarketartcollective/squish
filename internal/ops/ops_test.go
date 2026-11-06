@@ -378,3 +378,26 @@ func TestHardlinkCycle(t *testing.T) {
 		t.Fatal("materialize accepted a hardlink cycle")
 	}
 }
+
+func TestRepackKeepsImageConfigAndDeltaBases(t *testing.T) {
+	st, m, _, _ := roundtrip(t, true)
+	// Simulate a store-made manifest with an image config and a delta entry.
+	cfg := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:x"]}}`)
+	h, err := st.PutBlob(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ImageConfig = h
+	if err := st.SaveManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Repack(st, m, 262144, 8, false); err != nil {
+		t.Fatalf("repack: %v", err)
+	}
+	if _, err := st.ReadBlob(m.ImageConfig); err != nil {
+		t.Fatalf("repack reclaimed the image config blob: %v", err)
+	}
+	if _, _, err := Verify(st, m); err != nil {
+		t.Fatalf("verify after repack: %v", err)
+	}
+}

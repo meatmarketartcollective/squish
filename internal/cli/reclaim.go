@@ -452,7 +452,7 @@ func cmdRestore(args []string) error {
 			}
 		}
 		if m.ImageConfig == "" {
-			return fmt.Errorf("restore %s: this manifest was stored by an older squish without image config; re-reclaim it", m.Name)
+			return fmt.Errorf("restore %s: this manifest was stored by an older squish without image config; re-store it or re-reclaim it", m.Name)
 		}
 		fmt.Printf("restoring %s\n", m.Name)
 		layerPath := filepath.Join(tmpDir, m.Name+"-layer.tar")
