@@ -58,6 +58,7 @@ That puts the right binary for your machine in ~/.local/bin. Prefer manual: grab
   squish mount    [--store DIR] MANIFEST MNT
   squish reclaim  [--store DIR] [--image A,B] [--keep] [--min-size-mb N]
   squish restore  [--store DIR] [--out DIR] NAME...
+  squish uninstall [--store DIR]
   squish ls       [--store DIR]
 
 Store commands take a docker save archive (.tar or .tar.gz) or a directory.

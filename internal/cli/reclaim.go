@@ -437,11 +437,6 @@ func cmdRestore(args []string) error {
 	if err != nil {
 		return err
 	}
-	bin := dockerBin()
-	tmpDir := filepath.Join(st.Root, "tmp")
-	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
-		return err
-	}
 	for _, name := range fs.Args() {
 		m, err := st.LoadManifest(name)
 		if err != nil {
@@ -455,45 +450,64 @@ func cmdRestore(args []string) error {
 			return fmt.Errorf("restore %s: this manifest was stored by an older squish without image config; re-store it or re-reclaim it", m.Name)
 		}
 		fmt.Printf("restoring %s\n", m.Name)
-		layerPath := filepath.Join(tmpDir, m.Name+"-layer.tar")
-		diffID, err := writeSquashLayer(st, m, layerPath)
-		if err != nil {
-			return err
-		}
-		cfgRaw, err := st.ReadBlob(m.ImageConfig)
-		if err != nil {
-			return err
-		}
-		var cfg map[string]any
-		if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
-			return fmt.Errorf("restore %s: stored image config is not valid JSON: %v", m.Name, err)
-		}
-		cfg["rootfs"] = map[string]any{"type": "layers", "diff_ids": []string{diffID}}
-		cfg["history"] = []map[string]string{{
-			"created":    time.Now().UTC().Format(time.RFC3339),
-			"created_by": "squish restore (squashed)",
-		}}
-		cfgOut, _ := json.Marshal(cfg)
-		tags := m.RepoTags
-		if len(tags) == 0 {
-			tags = []string{strings.ReplaceAll(m.Name, "_", ":")}
-		}
-		imgPath := *out
-		if imgPath == "" {
-			imgPath = filepath.Join(tmpDir, m.Name+"-image.tar")
-		}
-		if err := writeDockerSaveArchive(imgPath, cfgOut, layerPath, tags); err != nil {
-			return err
-		}
-		if _, err := runDocker(bin, "load", "-i", imgPath); err != nil {
+		tags, imgPath, err := restoreManifestToDocker(st, m, *out)
+		if imgPath != "" {
 			fmt.Printf("docker load failed: %v\nthe rebuilt archive is at %s (load it by hand or retry)\n", err, imgPath)
 			continue
 		}
-		os.Remove(imgPath)
-		os.Remove(layerPath)
+		if err != nil {
+			return err
+		}
 		fmt.Printf("  loaded back into docker as %s\n", strings.Join(tags, ", "))
 	}
 	return nil
+}
+
+// restoreManifestToDocker rebuilds a squashed docker-save archive for m and
+// loads it into docker. It returns the repo tags docker now holds. On a
+// docker load failure it leaves the archive on disk and returns its path so
+// the caller can point the user at it; earlier failures return an empty
+// path. An empty outPath writes the archive inside the store's tmp dir.
+func restoreManifestToDocker(st *store.Store, m *store.Manifest, outPath string) (tags []string, imgPath string, err error) {
+	tmpDir := filepath.Join(st.Root, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		return nil, "", err
+	}
+	layerPath := filepath.Join(tmpDir, m.Name+"-layer.tar")
+	diffID, err := writeSquashLayer(st, m, layerPath)
+	if err != nil {
+		return nil, "", err
+	}
+	cfgRaw, err := st.ReadBlob(m.ImageConfig)
+	if err != nil {
+		return nil, "", err
+	}
+	var cfg map[string]any
+	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
+		return nil, "", fmt.Errorf("stored image config is not valid JSON: %v", err)
+	}
+	cfg["rootfs"] = map[string]any{"type": "layers", "diff_ids": []string{diffID}}
+	cfg["history"] = []map[string]string{{
+		"created":    time.Now().UTC().Format(time.RFC3339),
+		"created_by": "squish restore (squashed)",
+	}}
+	cfgOut, _ := json.Marshal(cfg)
+	tags = m.RepoTags
+	if len(tags) == 0 {
+		tags = []string{strings.ReplaceAll(m.Name, "_", ":")}
+	}
+	if outPath == "" {
+		outPath = filepath.Join(tmpDir, m.Name+"-image.tar")
+	}
+	if err := writeDockerSaveArchive(outPath, cfgOut, layerPath, tags); err != nil {
+		return nil, "", err
+	}
+	if _, err := runDocker(dockerBin(), "load", "-i", outPath); err != nil {
+		return nil, outPath, err
+	}
+	os.Remove(outPath)
+	os.Remove(layerPath)
+	return tags, "", nil
 }
 
 // writeDockerSaveArchive assembles config.json, the squashed layer and

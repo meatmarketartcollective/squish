@@ -28,6 +28,7 @@ Usage:
   squish mount    [--store DIR] MANIFEST MNT
   squish reclaim  [--store DIR] [--image A,B] [--keep] [--min-size-mb N]
   squish restore  [--store DIR] [--out DIR] NAME...
+  squish uninstall [--store DIR]     load every image back into docker, then remove the store
   squish ls       [--store DIR]
 
 Store commands take a docker save archive (.tar or .tar.gz) or a directory.
@@ -95,6 +96,8 @@ func Run(args []string) error {
 		return cmdReclaim(rest)
 	case "restore":
 		return cmdRestore(rest)
+	case "uninstall":
+		return cmdUninstall(rest)
 	case "ls":
 		return cmdLs(rest)
 	case "gc":
