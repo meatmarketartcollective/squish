@@ -63,17 +63,21 @@ func materializeSecure(st *store.Store, m *store.Manifest, out string, useHardli
 				unix.Close(parent)
 				return files, fmt.Errorf("%s: size mismatch (%d != %d)", e.Path, len(data), e.Size)
 			}
-			if err := secureWriteAt(parent, base, data, os.FileMode(e.Mode)); err != nil {
-				unix.Close(parent)
-				return files, fmt.Errorf("%s: %w", e.Path, err)
+			linked := false
+			if prev, ok := first[e.Hash]; ok && useHardlinks {
+				if lerr := secureLink(root, prev, e.Path); lerr == nil {
+					linked = true
+				}
+			}
+			if !linked {
+				if err := secureWriteAt(parent, base, data, os.FileMode(e.Mode)); err != nil {
+					unix.Close(parent)
+					return files, fmt.Errorf("%s: %w", e.Path, err)
+				}
 			}
 			unix.Close(parent)
-			if prev, ok := first[e.Hash]; !ok {
+			if _, ok := first[e.Hash]; !ok {
 				first[e.Hash] = e.Path
-			} else if useHardlinks {
-				// Dedup hardlinks are an optimization. If the filesystem refuses
-				// them, the already-written copy remains valid.
-				_ = secureLink(root, prev, e.Path)
 			}
 			written[e.Path] = e.Path
 			byPath[e.Path] = e
