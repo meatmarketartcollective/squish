@@ -18,6 +18,10 @@ import (
 // layer1 has base.txt, app/run.py and dir/one.txt; layer2 changes app/run.py,
 // adds dir/two.txt and whiteouts dir/one.txt.
 func makeDockerSave(t *testing.T, gz bool) string {
+	return makeDockerSaveCfg(t, gz, []byte("{}\n"))
+}
+
+func makeDockerSaveCfg(t *testing.T, gz bool, config []byte) string {
 	t.Helper()
 	type layer struct {
 		name string
@@ -76,7 +80,7 @@ func makeDockerSave(t *testing.T, gz bool) string {
 	}
 	add(l1.name, l1.tar)
 	add(l2.name, l2.tar)
-	add("cfg/config.json", []byte("{}\n"))
+	add("cfg/config.json", config)
 	add("manifest.json", man)
 	tw.Close()
 	if gzw != nil {
@@ -196,5 +200,32 @@ func TestIngestRejectsUnsafePath(t *testing.T) {
 	m := &store.Manifest{}
 	if err := applyLayer(tr, map[string]store.FileEntry{}, m, st, IngestOptions{}); err == nil {
 		t.Fatal("ingest accepted a layer path that escapes the layer root")
+	}
+}
+
+func TestIngestCapturesImageConfig(t *testing.T) {
+	p := makeDockerSaveCfg(t, false, []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:deadbeef"]}}`))
+	st, err := store.Open(t.TempDir() + "/st")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := IngestPath(st, p, "cfgtest", IngestOptions{Elide: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.ImageConfig == "" {
+		t.Fatal("ingest did not capture the image config")
+	}
+	data, err := st.ReadBlob(m.ImageConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Rootfs struct {
+			DiffIds []string `json:"diff_ids"`
+		} `json:"rootfs"`
+	}
+	if json.Unmarshal(data, &cfg) != nil || len(cfg.Rootfs.DiffIds) != 1 {
+		t.Fatalf("stored config wrong: %s", data)
 	}
 }

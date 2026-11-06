@@ -281,7 +281,7 @@ func TestMaterializeRefusesSymlinkParent(t *testing.T) {
 	m.Files = []store.FileEntry{
 		{Path: "var", Kind: store.KindDir, Mode: 0o755},
 		{Path: "var/run", Kind: store.KindSymlink, Link: outside},
-		{Path: "var/run/payload", Size: 7, Mode: 0o644, Kind: store.KindFile, Hash: hash},
+		{Path: "var/run/created/nested/payload", Size: 7, Mode: 0o644, Kind: store.KindFile, Hash: hash},
 	}
 	if _, err := Materialize(st, m, out, false, false); err == nil {
 		t.Fatal("materialize wrote through a symlinked parent")
@@ -292,6 +292,28 @@ func TestMaterializeRefusesSymlinkParent(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("files appeared outside the output directory: %v", entries)
+	}
+}
+
+func TestMaterializeRefusesSymlinkParentForSymlinkEntry(t *testing.T) {
+	st, _, _, _ := roundtrip(t, false)
+	out := t.TempDir()
+	outside := t.TempDir()
+	m := &store.Manifest{Name: "symlink-parent"}
+	m.Files = []store.FileEntry{
+		{Path: "var", Kind: store.KindDir, Mode: 0o755},
+		{Path: "var/run", Kind: store.KindSymlink, Link: outside},
+		{Path: "var/run/created/link", Kind: store.KindSymlink, Link: "/tmp/target"},
+	}
+	if _, err := Materialize(st, m, out, false, false); err == nil {
+		t.Fatal("materialize created a symlink through a symlinked parent")
+	}
+	entries, err := os.ReadDir(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("entries appeared outside the output directory: %v", entries)
 	}
 }
 
@@ -354,5 +376,28 @@ func TestHardlinkCycle(t *testing.T) {
 	}
 	if _, err := Materialize(st, m, out, true, false); err == nil {
 		t.Fatal("materialize accepted a hardlink cycle")
+	}
+}
+
+func TestRepackKeepsImageConfigAndDeltaBases(t *testing.T) {
+	st, m, _, _ := roundtrip(t, true)
+	// Simulate a store-made manifest with an image config and a delta entry.
+	cfg := []byte(`{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":["sha256:x"]}}`)
+	h, err := st.PutBlob(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ImageConfig = h
+	if err := st.SaveManifest(m); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Repack(st, m, 262144, 8, false); err != nil {
+		t.Fatalf("repack: %v", err)
+	}
+	if _, err := st.ReadBlob(m.ImageConfig); err != nil {
+		t.Fatalf("repack reclaimed the image config blob: %v", err)
+	}
+	if _, _, err := Verify(st, m); err != nil {
+		t.Fatalf("verify after repack: %v", err)
 	}
 }

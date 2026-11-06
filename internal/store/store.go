@@ -309,9 +309,17 @@ func (s *Store) DeleteOrphanBlobs(m *Manifest, force bool) (int, error) {
 		}
 	}
 	ref := map[string]bool{}
+	if m.ImageConfig != "" {
+		// The image config is what restore needs to rebuild a
+		// docker-loadable archive; repack must never reclaim it.
+		ref[m.ImageConfig] = true
+	}
 	for _, e := range m.Files {
-		if e.Kind == KindFile {
+		switch e.Kind {
+		case KindFile:
 			ref[e.Hash] = true
+		case KindDelta:
+			ref[e.Base] = true
 		}
 	}
 	n := 0
