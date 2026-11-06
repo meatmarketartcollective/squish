@@ -10,6 +10,7 @@ import (
 
 	"github.com/aloysiusvonfck/squish/internal/ingest"
 	"github.com/aloysiusvonfck/squish/internal/ops"
+	"github.com/aloysiusvonfck/squish/internal/sqfs"
 	"github.com/aloysiusvonfck/squish/internal/store"
 )
 
@@ -24,6 +25,7 @@ Usage:
   squish delta    [--store DIR] [--min-file N] [--max-file N]
   squish cold     [--store DIR] [--min-size N] MANIFEST
   squish gc       [--store DIR]
+  squish mount    [--store DIR] MANIFEST MNT
 
 Store commands take a docker save archive (.tar or .tar.gz) or a directory.
 Manifests are named by their basename unless --name is given.`
@@ -51,6 +53,8 @@ func Run(args []string) error {
 		return cmdCold(rest)
 	case "gc":
 		return cmdGC(rest)
+	case "mount":
+		return cmdMount(rest)
 	case "help", "-h", "--help":
 		fmt.Println(usage)
 		return nil
@@ -288,4 +292,18 @@ func cmdGC(args []string) error {
 	}
 	fmt.Printf("gc: removed %d objects, reclaimed %d bytes\n", removed, reclaimed)
 	return nil
+}
+
+func cmdMount(args []string) error {
+	fs := flag.NewFlagSet("mount", flag.ExitOnError)
+	sdir := fs.String("store", "", "store root")
+	fs.Parse(args)
+	if fs.NArg() != 2 {
+		return fmt.Errorf("mount: need MANIFEST MNT")
+	}
+	st, m, err := loadManifestAt(*sdir, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	return sqfs.Mount(st, m, fs.Arg(1))
 }

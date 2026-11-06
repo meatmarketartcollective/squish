@@ -135,3 +135,11 @@ BCJ support (`SQUISH_XZ` can point at one; Termux's xz has it).
 
 `squish gc` removes every blob, delta frame and cold frame no manifest
 references. Delta bases are protected.
+
+## Browsing without materializing
+
+`squish mount MANIFEST MNT` presents the manifest as a read-only
+filesystem: the whole image layout browsable and readable straight out
+of the store, nothing materialized to disk. Needs FUSE on the host
+(`fusermount`/`fusermount3`). Elided files return an error on read with
+the reason they were elided.

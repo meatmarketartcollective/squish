@@ -7,4 +7,7 @@ require (
 	golang.org/x/crypto v0.31.0
 )
 
-require golang.org/x/sys v0.28.0 // indirect
+require (
+	bazil.org/fuse v0.0.0-20230120002735-62a210ff1fd5 // indirect
+	golang.org/x/sys v0.28.0 // indirect
+)
