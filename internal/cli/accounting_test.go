@@ -123,27 +123,61 @@ func TestAccountingSharedAndUnique(t *testing.T) {
 
 func TestAccountingMissingObjectErrors(t *testing.T) {
 	st, ms := loadAccountingStore(t)
-	// find one referenced blob and remove it from disk
+	// find a blob referenced only by ms[0] and remove it from disk; the
+	// other manifest must still account cleanly
+	other := map[string]bool{}
+	for _, e := range ms[1].Files {
+		for _, key := range []string{e.Hash, e.Base, e.Frame} {
+			if key != "" {
+				other[key] = true
+			}
+		}
+	}
+	if ms[1].ImageConfig != "" {
+		other[ms[1].ImageConfig] = true
+	}
 	m := ms[0]
 	var victim string
 	for _, e := range m.Files {
-		if e.Kind == store.KindFile && e.Hash != m.ImageConfig {
+		if e.Kind == store.KindFile && e.Hash != m.ImageConfig && !other[e.Hash] {
 			victim = e.Hash
 			break
 		}
 	}
 	if victim == "" {
-		t.Fatal("no file blob found")
+		t.Fatal("no uniquely-owned blob found")
 	}
 	if err := os.Remove(filepath.Join(st.Root, "blobs", victim[:2], victim+".zst")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := st.AccountStore(ms)
-	if err == nil {
-		t.Fatal("expected an error for the missing blob")
+	acc, err := st.AccountStore(ms)
+	if err != nil {
+		t.Fatalf("one broken manifest must not sink the store: %v", err)
 	}
-	if !contains(err.Error(), m.Name) {
-		t.Errorf("error should name the manifest %q, got: %v", m.Name, err)
+	var broken, good int
+	for _, ia := range acc.Images {
+		if ia.OK {
+			good++
+		} else {
+			broken++
+			if !contains(ia.Err, m.Name) {
+				t.Errorf("error should name the manifest %q, got: %s", m.Name, ia.Err)
+			}
+		}
+	}
+	if broken != 1 || good != len(ms)-1 {
+		t.Errorf("want 1 broken / %d good, got %d broken / %d good", len(ms)-1, broken, good)
+	}
+	if acc.UnresolvedKeys == 0 {
+		t.Error("expected unresolved keys counted")
+	}
+	// an object a broken manifest names is never an orphan
+	if acc.OrphanCount != 0 {
+		t.Errorf("broken manifest's other objects must not become orphans, got %d", acc.OrphanCount)
+	}
+	// all-broken store still errors
+	if _, err := st.AccountStore(ms[:1]); err == nil {
+		t.Error("expected an error when no manifest accounts cleanly")
 	}
 }
 

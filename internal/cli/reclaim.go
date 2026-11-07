@@ -601,12 +601,27 @@ func cmdLs(args []string) error {
 	}
 	fmt.Printf("%-32s %-10s %-10s %-8s %s\n", "NAME", "RAW", "STORED", "SAVED", "REMOVING FREES")
 	if accErr == nil {
+		var broken []string
 		for _, ia := range acc.Images {
+			if !ia.OK {
+				broken = append(broken, ia.Err)
+			}
+		}
+		for _, b := range broken {
+			fmt.Printf("warning: accounting unavailable for %s (excluded from the totals below)\n", b)
+		}
+		for _, ia := range acc.Images {
+			if !ia.OK {
+				continue
+			}
 			pct := 0
 			if ia.Raw > 0 {
 				pct = int(100 - 100*ia.Stored/ia.Raw)
 			}
 			fmt.Printf("%-32s %-10s %-10s %-8s %s\n", ia.Name, human(ia.Raw), human(ia.Stored), fmt.Sprintf("%d%%", pct), human(ia.Unique))
+		}
+		if acc.UnresolvedKeys > 0 {
+			fmt.Printf("note: %d object(s) named by broken manifests could not be stat-ed; excluded from the store total\n", acc.UnresolvedKeys)
 		}
 		for _, u := range unreadable {
 			fmt.Printf("%-32s unreadable (excluded from totals)\n", u)

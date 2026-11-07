@@ -19,15 +19,18 @@ type ImageAccount struct {
 	Stored int64 // physical bytes this manifest references, each object once
 	Unique int64 // bytes referenced only by this manifest: removing it frees this
 	Shared int64 // bytes also referenced by another manifest
+	OK     bool  // false when one of this manifest's objects is missing or unreadable
+	Err    string
 }
 
 type StoreAccount struct {
-	Images      []ImageAccount
-	TotalRaw    int64
-	TotalElided int64
-	Physical    int64 // every referenced object on disk, counted once
-	OrphanBytes int64 // on disk but referenced by nothing (gc candidates)
-	OrphanCount int
+	Images         []ImageAccount
+	TotalRaw       int64
+	TotalElided    int64
+	Physical       int64 // every referenced object on disk, counted once
+	UnresolvedKeys int   // referenced but unstat-able; excluded from Physical, never orphans
+	OrphanBytes    int64 // on disk but referenced by nothing (gc candidates)
+	OrphanCount    int
 }
 
 // objectKeys returns the physical store objects a manifest entry needs.
@@ -95,34 +98,63 @@ func (s *Store) AccountStore(ms []*Manifest) (*StoreAccount, error) {
 		sizes[key] = sz
 		return sz, nil
 	}
-	touch := func(m *Manifest, key string, seen map[string]bool) error {
-		if seen[key] {
-			return nil
-		}
-		seen[key] = true
-		if _, err := resolve(key); err != nil {
-			return fmt.Errorf("%s: %s: %w", m.Name, key, err)
-		}
-		refcount[key]++
-		return nil
-	}
-	for _, m := range ms {
+	acc.Images = make([]ImageAccount, len(ms))
+	okCount := 0
+	for i, m := range ms {
+		row := &acc.Images[i]
+		row.Name = m.Name
+		row.Raw = m.RawBytes
+		row.Elided = m.ElidedBytes
+		row.OK = true
+		// Every manifest's references are counted even when that manifest's
+		// numbers end up unavailable: an object a broken manifest names is
+		// never an orphan, and a blob shared with it still counts as shared
+		// for the images that do resolve, so "removing frees" never
+		// overstates.
 		seen := map[string]bool{}
 		for _, e := range m.Files {
 			for _, key := range objectKeys(e) {
-				if err := touch(m, key, seen); err != nil {
-					return nil, err
+				if seen[key] {
+					continue
 				}
+				seen[key] = true
+				if _, err := resolve(key); err != nil {
+					row.OK = false
+					row.Err = fmt.Errorf("%s: %s: %w", m.Name, key, err).Error()
+					continue
+				}
+				refcount[key]++
 			}
 		}
 		if m.ImageConfig != "" {
-			if err := touch(m, "blob:"+m.ImageConfig, seen); err != nil {
-				return nil, err
+			key := "blob:" + m.ImageConfig
+			if !seen[key] {
+				seen[key] = true
+				if _, err := resolve(key); err != nil {
+					row.OK = false
+					row.Err = fmt.Errorf("%s: %s: %w", m.Name, key, err).Error()
+				} else {
+					refcount[key]++
+				}
 			}
 		}
+		if row.OK {
+			okCount++
+		}
 	}
-	for _, m := range ms {
-		ia := ImageAccount{Name: m.Name, Raw: m.RawBytes, Elided: m.ElidedBytes}
+	for i := range acc.Images {
+		row := &acc.Images[i]
+		if !row.OK {
+			m := ms[i]
+			for _, e := range m.Files {
+				for _, key := range objectKeys(e) {
+					if _, ok := sizes[key]; !ok {
+						acc.UnresolvedKeys++
+					}
+				}
+			}
+			continue
+		}
 		seen := map[string]bool{}
 		add := func(key string) {
 			if seen[key] {
@@ -130,28 +162,30 @@ func (s *Store) AccountStore(ms []*Manifest) (*StoreAccount, error) {
 			}
 			seen[key] = true
 			sz := sizes[key]
-			ia.Stored += sz
+			row.Stored += sz
 			if refcount[key] == 1 {
-				ia.Unique += sz
+				row.Unique += sz
 			}
 		}
-		for _, e := range m.Files {
+		for _, e := range ms[i].Files {
 			for _, key := range objectKeys(e) {
 				add(key)
 			}
 		}
-		if m.ImageConfig != "" {
-			add("blob:" + m.ImageConfig)
+		if ms[i].ImageConfig != "" {
+			add("blob:" + ms[i].ImageConfig)
 		}
-		ia.Shared = ia.Stored - ia.Unique
-		acc.Images = append(acc.Images, ia)
-		acc.TotalRaw += ia.Raw
-		acc.TotalElided += ia.Elided
+		row.Shared = row.Stored - row.Unique
+		acc.TotalRaw += row.Raw
+		acc.TotalElided += row.Elided
 	}
 	for _, sz := range sizes {
 		acc.Physical += sz
 	}
 	s.scanOrphans(acc, refcount)
+	if okCount == 0 {
+		return acc, fmt.Errorf("no manifest accounted cleanly")
+	}
 	return acc, nil
 }
 
