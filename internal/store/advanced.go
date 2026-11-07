@@ -55,11 +55,10 @@ func (s *Store) PutColdNative(hash string, data []byte) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return 0, err
 	}
-	tmp := p + ".tmp" + RandomID(4)
-	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
+	if err := writeDurable(p, comp); err != nil {
 		return 0, err
 	}
-	return int64(len(comp)), os.Rename(tmp, p)
+	return int64(len(comp)), nil
 }
 
 // ReadColdNative decodes a native cold frame.
@@ -104,11 +103,10 @@ func (s *Store) PutDelta(target, base string, data []byte) (int64, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return 0, err
 	}
-	tmp := p + ".tmp" + RandomID(4)
-	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
+	if err := writeDurable(p, comp); err != nil {
 		return 0, err
 	}
-	return int64(len(comp)), os.Rename(tmp, p)
+	return int64(len(comp)), nil
 }
 
 // CompressDelta delta-encodes data against baseData with zstd dictionaries.
@@ -208,11 +206,7 @@ func (s *Store) WriteCold(hash string, comp []byte) error {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return err
 	}
-	tmp := p + ".tmp" + RandomID(4)
-	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, p)
+	return writeDurable(p, comp)
 }
 
 // ReadCold decodes an xz cold frame.

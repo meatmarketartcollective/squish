@@ -161,11 +161,50 @@ func (s *Store) PutBlob(data []byte) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		return "", err
 	}
-	tmp := p + ".tmp" + RandomID(4)
-	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
+	if err := writeDurable(p, comp); err != nil {
 		return "", err
 	}
-	return hash, os.Rename(tmp, p)
+	return hash, nil
+}
+
+// writeDurable lands data at finalPath so that neither a killed process nor
+// a power cut can leave a renamed-but-unfinished object or a manifest
+// pointing at data that never made it to disk: write to a temp file in the
+// destination directory, fsync the file, rename, fsync the directory.
+func writeDurable(finalPath string, data []byte) error {
+	tmp := finalPath + ".tmp" + RandomID(4)
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, finalPath); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return syncDir(filepath.Dir(finalPath))
+}
+
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	return d.Sync()
 }
 
 func (s *Store) ReadBlob(hash string) ([]byte, error) {
@@ -275,11 +314,7 @@ func (s *Store) SaveManifest(m *Manifest) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.ManifestPath(m.Name) + ".tmp" + RandomID(4)
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.ManifestPath(m.Name))
+	return writeDurable(s.ManifestPath(m.Name), b)
 }
 
 func (s *Store) LoadManifest(name string) (*Manifest, error) {
