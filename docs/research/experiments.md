@@ -2,8 +2,8 @@
 
 Companion to the research plan on `research/store-optimization`. Every idea in the
 roadmap that is testable gets one experiment here. This branch carries the plan and
-its harness; all experiment code runs on the laptop (GutterSnatch) per the standing
-rule, never in CI.
+its harness; all experiment code runs in Termux on the phone per Casey's direction,
+never in CI.
 
 ## Corpus and baseline
 
@@ -39,7 +39,7 @@ Order matters only where noted; E1, E2 and E3 each start from the baseline.
 **E1. Content-defined chunk dedup (very high priority).**
 Question: how many bytes does whole-file dedup leave on the table, and how much of
 that does the 128 MB ingest window already remove? Method: FastCDC-style chunking
-(2/8/16 KiB targets) as a read-only offline pass over the corpus store; report unique
+(2/8/16 KiB targets) as a read-only offline pass over the extracted corpus trees (never store objects: those are already compressed); report unique
 chunk bytes vs unique-file bytes, before and after subtracting redundancy the window
 already compresses (isolate by comparing against the same corpus recompressed with
 windowing disabled in a scratch run). If the isolated remainder is real, prototype a
