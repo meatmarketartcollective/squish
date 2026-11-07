@@ -138,6 +138,7 @@ func cmdStore(args []string) error {
 	name := fs.String("name", "", "manifest name (default source basename)")
 	noElide := fs.Bool("no-elide", false, "store regenerable files too")
 	chunk := fs.Bool("chunk", false, "experimental: chunk large files content-defined (E1)")
+	fast := fs.Bool("fast", false, "write at the fast compression level instead of max")
 	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() == 0 {
 		return fmt.Errorf("store: need a source (docker save tar or directory)")
@@ -146,6 +147,7 @@ func cmdStore(args []string) error {
 	if err != nil {
 		return err
 	}
+	st.Fast = *fast
 	for _, src := range fs.Args() {
 		nm := *name
 		if nm == "" {

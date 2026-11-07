@@ -90,6 +90,11 @@ type FrameFileEntry struct {
 
 type Store struct {
 	Root string
+	// Fast opts out of the default best-compression write path: when
+	// true, new blobs, frame indexes and manifests are written at the
+	// fast level instead of max. Reads are unaffected; zstd frames
+	// decode identically at either level.
+	Fast bool
 }
 
 func Open(root string) (*Store, error) {
@@ -151,7 +156,8 @@ func decOpts() []zstd.DOption {
 	return []zstd.DOption{zstd.WithDecoderMaxWindow(1 << 27)}
 }
 
-// EncodeAllFast compresses data at the install-path setting.
+// EncodeAllFast compresses data at the fast level (the old install-path
+// setting, now the -fast escape hatch).
 func EncodeAllFast(data []byte) ([]byte, error) {
 	enc, err := zstd.NewWriter(nil, encOpts(zstd.SpeedDefault)...)
 	if err != nil {
@@ -159,6 +165,27 @@ func EncodeAllFast(data []byte) ([]byte, error) {
 	}
 	defer enc.Close()
 	return enc.EncodeAll(data, nil), nil
+}
+
+// EncodeAllMax compresses data at the best-compression level with the
+// same 128 MB window: the default for new objects since v0.3.11.
+// Decompression cost is level-independent, so reads stay as fast.
+func EncodeAllMax(data []byte) ([]byte, error) {
+	enc, err := zstd.NewWriter(nil, encOpts(zstd.SpeedBestCompression)...)
+	if err != nil {
+		return nil, err
+	}
+	defer enc.Close()
+	return enc.EncodeAll(data, nil), nil
+}
+
+// encodeAll writes new objects at the store's configured level: max
+// compression by default, fast when Store.Fast is set.
+func (s *Store) encodeAll(data []byte) ([]byte, error) {
+	if s.Fast {
+		return EncodeAllFast(data)
+	}
+	return EncodeAllMax(data)
 }
 
 // DecodeAll decompresses a plain (undictionaried) zstd frame.
@@ -179,7 +206,7 @@ func (s *Store) PutBlob(data []byte) (string, error) {
 	if _, err := os.Stat(p); err == nil {
 		return hash, nil
 	}
-	comp, err := EncodeAllFast(data)
+	comp, err := s.encodeAll(data)
 	if err != nil {
 		return "", err
 	}
@@ -218,7 +245,7 @@ func (s *Store) WriteFrame(gid string, dict []byte, files []FrameFileEntry, payl
 	}
 	idx := FrameIndex{GID: gid, Files: files}
 	b, _ := json.Marshal(idx)
-	comp, err := EncodeAllFast(b)
+	comp, err := s.encodeAll(b)
 	if err != nil {
 		return err
 	}
@@ -406,7 +433,7 @@ func (s *Store) SaveManifest(m *Manifest) error {
 	if err != nil {
 		return err
 	}
-	comp, err := EncodeAllFast(b)
+	comp, err := s.encodeAll(b)
 	if err != nil {
 		return err
 	}
