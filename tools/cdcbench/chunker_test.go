@@ -133,9 +133,9 @@ func TestAccountorDedup(t *testing.T) {
 	copy(c1.Hash[:], "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 	copy(c2.Hash[:], "cccccccccccccccccccccccccccccccc")
 	c1.Size, c2.Size = 8192, 4096
-	acc.AddChunk(c1)
-	acc.AddChunk(c2)
-	acc.AddChunk(c1)
+	acc.AddChunk(c1, "t")
+	acc.AddChunk(c2, "t")
+	acc.AddChunk(c1, "t")
 	st := acc.Snapshot()
 	if st.UniqueFiles != 1 || st.DupFileB != 1000 {
 		t.Fatalf("file accounting wrong: %+v", st)

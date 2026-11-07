@@ -97,23 +97,27 @@ func (s *Scanner) emit() {
 // Accountor records whole-file and chunk-level deduplication results.
 // Safe for concurrent use.
 type Accountor struct {
-	mu          sync.Mutex
-	fileSeen    map[[sha256.Size]byte]struct{}
-	chunkSeen   map[[sha256.Size]byte]struct{}
-	uniqueFiles int64
-	uniqueFileB int64
-	dupFileB    int64
-	uniqueChB   int64
-	dupChB      int64
-	chunks      int64
-	hist        map[int]int64
+	mu             sync.Mutex
+	fileSeen       map[[sha256.Size]byte]struct{}
+	chunkSeen      map[[sha256.Size]byte]struct{}
+	chunkGroup     map[[sha256.Size]byte]string
+	uniqueFiles    int64
+	uniqueFileB    int64
+	dupFileB       int64
+	uniqueChB      int64
+	dupChB         int64
+	sameGroupDupB  int64
+	crossGroupDupB int64
+	chunks         int64
+	hist           map[int]int64
 }
 
 func newAccountor() *Accountor {
 	return &Accountor{
-		fileSeen:  map[[sha256.Size]byte]struct{}{},
-		chunkSeen: map[[sha256.Size]byte]struct{}{},
-		hist:      map[int]int64{},
+		fileSeen:   map[[sha256.Size]byte]struct{}{},
+		chunkSeen:  map[[sha256.Size]byte]struct{}{},
+		chunkGroup: map[[sha256.Size]byte]string{},
+		hist:       map[int]int64{},
 	}
 }
 
@@ -130,16 +134,24 @@ func (a *Accountor) AddFile(sum [sha256.Size]byte, size int64) {
 	a.uniqueFileB += size
 }
 
-// AddChunk records one chunk.
-func (a *Accountor) AddChunk(c Chunk) {
+// AddChunk records one chunk. group is the containing corpus group
+// (here: the layer directory); repeat chunks are split same-group vs
+// cross-group by first-seen group.
+func (a *Accountor) AddChunk(c Chunk, group string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.chunks++
 	a.hist[bucket(c.Size)]++
-	if _, ok := a.chunkSeen[c.Hash]; ok {
+	if g, ok := a.chunkGroup[c.Hash]; ok {
 		a.dupChB += int64(c.Size)
+		if g == group {
+			a.sameGroupDupB += int64(c.Size)
+		} else {
+			a.crossGroupDupB += int64(c.Size)
+		}
 		return
 	}
+	a.chunkGroup[c.Hash] = group
 	a.chunkSeen[c.Hash] = struct{}{}
 	a.uniqueChB += int64(c.Size)
 }
@@ -153,31 +165,35 @@ func (a *Accountor) Snapshot() Stats {
 		h[k] = v
 	}
 	return Stats{
-		UniqueFiles:  a.uniqueFiles,
-		UniqueFileB:  a.uniqueFileB,
-		DupFileB:     a.dupFileB,
-		Chunks:       a.chunks,
-		UniqueChunkB: a.uniqueChB,
-		DupChunkB:    a.dupChB,
-		Hist:         h,
+		UniqueFiles:    a.uniqueFiles,
+		UniqueFileB:    a.uniqueFileB,
+		DupFileB:       a.dupFileB,
+		Chunks:         a.chunks,
+		UniqueChunkB:   a.uniqueChB,
+		DupChunkB:      a.dupChB,
+		SameGroupDupB:  a.sameGroupDupB,
+		CrossGroupDupB: a.crossGroupDupB,
+		Hist:           h,
 	}
 }
 
 // Stats is the aggregate result of a bench run.
 type Stats struct {
-	Files        int64         `json:"files"`
-	TotalBytes   int64         `json:"total_bytes"`
-	UniqueFiles  int64         `json:"unique_files"`
-	UniqueFileB  int64         `json:"unique_file_bytes"`
-	DupFileB     int64         `json:"duplicate_file_bytes"`
-	Chunks       int64         `json:"chunks"`
-	UniqueChunkB int64         `json:"unique_chunk_bytes"`
-	DupChunkB    int64         `json:"duplicate_chunk_bytes"`
-	ChunkMin     int           `json:"chunk_min"`
-	ChunkAvg     int           `json:"chunk_avg"`
-	ChunkMax     int           `json:"chunk_max"`
-	Dirs         []string      `json:"dirs"`
-	Hist         map[int]int64 `json:"histogram,omitempty"`
+	Files          int64         `json:"files"`
+	TotalBytes     int64         `json:"total_bytes"`
+	UniqueFiles    int64         `json:"unique_files"`
+	UniqueFileB    int64         `json:"unique_file_bytes"`
+	DupFileB       int64         `json:"duplicate_file_bytes"`
+	Chunks         int64         `json:"chunks"`
+	UniqueChunkB   int64         `json:"unique_chunk_bytes"`
+	DupChunkB      int64         `json:"duplicate_chunk_bytes"`
+	SameGroupDupB  int64         `json:"same_group_duplicate_chunk_bytes"`
+	CrossGroupDupB int64         `json:"cross_group_duplicate_chunk_bytes"`
+	ChunkMin       int           `json:"chunk_min"`
+	ChunkAvg       int           `json:"chunk_avg"`
+	ChunkMax       int           `json:"chunk_max"`
+	Dirs           []string      `json:"dirs"`
+	Hist           map[int]int64 `json:"histogram,omitempty"`
 }
 
 func bucket(n int) int {

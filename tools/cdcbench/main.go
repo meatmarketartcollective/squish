@@ -58,14 +58,14 @@ func main() {
 	sem := make(chan struct{}, workers)
 	for _, t := range tasks {
 		wg.Add(1)
-		go func(path string) {
+		go func(path, group string) {
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			if err := benchFile(path, min, avg, max, acc); err != nil {
+			if err := benchFile(path, group, min, avg, max, acc); err != nil {
 				fmt.Fprintf(os.Stderr, "cdcbench: %s: %v\n", path, err)
 			}
-		}(t)
+		}(t.path, t.group)
 	}
 	wg.Wait()
 
@@ -88,7 +88,7 @@ func main() {
 	printText(st, elapsed)
 }
 
-func benchFile(path string, min, avg, max int, acc *Accountor) error {
+func benchFile(path, group string, min, avg, max int, acc *Accountor) error {
 	f, err := os.Open(path)
 	if err != nil {
 		return err
@@ -121,14 +121,22 @@ func benchFile(path string, min, avg, max int, acc *Accountor) error {
 	copy(fsum[:], fileDigest.Sum(nil))
 	acc.AddFile(fsum, fi.Size())
 	for _, c := range sc.Chunks {
-		acc.AddChunk(c)
+		acc.AddChunk(c, group)
 	}
 	return nil
 }
 
-func collect(dirs []string, skipUnder int64) []string {
-	var tasks []string
+type task struct {
+	path  string
+	group string
+}
+
+// group is the first path component under the walked root (the corpus
+// layer directory here), the unit the group split reports on.
+func collect(dirs []string, skipUnder int64) []task {
+	var tasks []task
 	for _, d := range dirs {
+		root := d
 		_ = filepath.WalkDir(d, func(p string, d fs.DirEntry, err error) error {
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "cdcbench: %s: %v\n", p, err)
@@ -136,7 +144,12 @@ func collect(dirs []string, skipUnder int64) []string {
 			}
 			if d.Type().IsRegular() {
 				if info, err := d.Info(); err == nil && info.Size() >= skipUnder {
-					tasks = append(tasks, p)
+					rel, _ := filepath.Rel(root, p)
+					group := rel
+					if i := strings.IndexByte(rel, filepath.Separator); i > 0 {
+						group = rel[:i]
+					}
+					tasks = append(tasks, task{path: p, group: group})
 				}
 			}
 			return nil
