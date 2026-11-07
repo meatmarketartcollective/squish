@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/klauspost/compress/zstd"
@@ -77,8 +78,13 @@ type Manifest struct {
 }
 
 type FrameIndex struct {
-	GID   string           `json:"gid"`
-	Files []FrameFileEntry `json:"files"`
+	GID string `json:"gid"`
+	// Stream marks a frame whose payload is ONE continuous zstd
+	// stream over concatenated file contents; entries address raw
+	// offsets inside the decompressed stream (Offset=raw start,
+	// Clen=raw length). Reading decodes the whole roll and slices.
+	Stream bool             `json:"stream,omitempty"`
+	Files  []FrameFileEntry `json:"files"`
 }
 
 type FrameFileEntry struct {
@@ -95,6 +101,12 @@ type Store struct {
 	// fast level instead of max. Reads are unaffected; zstd frames
 	// decode identically at either level.
 	Fast bool
+
+	// single-slot cache for the last decoded stream-frame roll, so
+	// sequential reads over one roll decode it once
+	spanMu   sync.Mutex
+	spanGid  string
+	spanData []byte
 }
 
 func Open(root string) (*Store, error) {
@@ -243,7 +255,23 @@ func (s *Store) WriteFrame(gid string, dict []byte, files []FrameFileEntry, payl
 	if err := os.WriteFile(s.FramePath(gid), payload, 0o644); err != nil {
 		return err
 	}
-	idx := FrameIndex{GID: gid, Files: files}
+	return s.writeFrameIndex(gid, FrameIndex{GID: gid, Files: files})
+}
+
+// WriteStreamFrame stores a frame whose payload is one continuous zstd
+// stream over concatenated file contents; entries address raw offsets
+// inside the decompressed stream. The dict file stays empty.
+func (s *Store) WriteStreamFrame(gid string, files []FrameFileEntry, stream []byte) error {
+	if err := os.WriteFile(s.FrameDictPath(gid), nil, 0o644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(s.FramePath(gid), stream, 0o644); err != nil {
+		return err
+	}
+	return s.writeFrameIndex(gid, FrameIndex{GID: gid, Stream: true, Files: files})
+}
+
+func (s *Store) writeFrameIndex(gid string, idx FrameIndex) error {
 	b, _ := json.Marshal(idx)
 	comp, err := s.encodeAll(b)
 	if err != nil {
@@ -285,6 +313,13 @@ func (s *Store) ReadFrameIndex(gid string) (*FrameIndex, error) {
 }
 
 func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
+	idx, err := s.ReadFrameIndex(gid)
+	if err != nil {
+		return nil, err
+	}
+	if idx.Stream {
+		return s.readStreamSpan(gid, off, clen)
+	}
 	f, err := os.Open(s.FramePath(gid))
 	if err != nil {
 		return nil, err
@@ -304,6 +339,31 @@ func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
 	}
 	defer dec.Close()
 	return dec.DecodeAll(chunk, nil)
+}
+
+// readStreamSpan slices [off, off+clen) out of a stream frame's
+// decompressed roll. The last decoded roll is cached, so sequential
+// reads over one roll decode it once.
+func (s *Store) readStreamSpan(gid string, off, clen int64) ([]byte, error) {
+	s.spanMu.Lock()
+	defer s.spanMu.Unlock()
+	if s.spanGid != gid {
+		comp, err := os.ReadFile(s.FramePath(gid))
+		if err != nil {
+			return nil, err
+		}
+		data, err := DecodeAll(comp)
+		if err != nil {
+			return nil, fmt.Errorf("frame %s: %w", gid, err)
+		}
+		s.spanGid, s.spanData = gid, data
+	}
+	if off < 0 || clen < 0 || off+clen > int64(len(s.spanData)) {
+		return nil, fmt.Errorf("frame %s: span %d+%d out of range (%d)", gid, off, clen, len(s.spanData))
+	}
+	out := make([]byte, clen)
+	copy(out, s.spanData[off:off+clen])
+	return out, nil
 }
 
 // ReadChunked reassembles a chunked file from its chunk list, reading

@@ -86,6 +86,8 @@ func Run(args []string) error {
 		return cmdVerify(rest)
 	case "stats":
 		return cmdStats(rest)
+	case "sweep":
+		return cmdSweep(rest)
 	case "repack":
 		return cmdRepack(rest)
 	case "delta":
@@ -263,6 +265,28 @@ func cmdRepack(args []string) error {
 	}
 	_, _, err = ops.Repack(st, m, *maxFile, *minGroup, *force)
 	return err
+}
+
+func cmdSweep(args []string) error {
+	fs := flag.NewFlagSet("sweep", flag.ExitOnError)
+	sdir := fs.String("store", "", "store root")
+	sortMode := fs.String("sort", "manifest", "file order: manifest (read locality) or path (best ratio)")
+	rollMB := fs.Int("roll-mb", 128, "raw MiB per stream frame")
+	fs.Parse(flagsFirst(fs, args))
+	st, err := openStoreAt(*sdir)
+	if err != nil {
+		return err
+	}
+	ms, files, frames, err := ops.SweepStore(st, int64(*rollMB)<<20, *sortMode)
+	if err != nil {
+		return err
+	}
+	n, reclaimed, err := ops.GCAll(st)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("swept %d manifests (%d files) into %d stream frames, %d blobs reclaimed (%d B)\n", ms, files, frames, n, reclaimed)
+	return nil
 }
 
 func openStoreAt(sdir string) (*store.Store, error) {
