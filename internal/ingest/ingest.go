@@ -21,6 +21,11 @@ import (
 type IngestOptions struct {
 	Elide  bool
 	NoGzip bool // caller already wrapped the reader
+	// Chunk opts in to experimental content-defined chunking for files
+	// at or above the chunk threshold. Off by default: on the real
+	// corpus the chunk-blob path stores more than whole-file blobs
+	// (per-chunk compression windows), so E1 stays behind this flag.
+	Chunk bool
 }
 
 // IngestPath ingests a docker save tarball (.tar or .tar.gz) or a plain
@@ -91,7 +96,8 @@ func ingestDir(st *store.Store, root, name string, opts IngestOptions) (*store.M
 					return nil
 				}
 			}
-			fh, chunks, err := st.PutFileContent(data)
+			var chunks []store.ChunkRef
+			fh, chunks, err := putFile(st, data, opts.Chunk)
 			if err != nil {
 				return err
 			}
@@ -256,6 +262,16 @@ func ingestDockerSave(st *store.Store, path, name string, opts IngestOptions) (*
 	return tallyDedup(m), nil
 }
 
+// putFile stores file content: whole-file blob normally, or chunked
+// into content-defined pieces when opted in.
+func putFile(st *store.Store, data []byte, chunk bool) (string, []store.ChunkRef, error) {
+	if chunk {
+		return st.PutFileContent(data)
+	}
+	hash, err := st.PutBlob(data)
+	return hash, nil, err
+}
+
 // tallyDedup counts occurrences beyond the first per content hash,
 // whole files and chunks alike.
 func tallyDedup(m *store.Manifest) *store.Manifest {
@@ -364,7 +380,8 @@ func applyLayer(lr *tar.Reader, state map[string]store.FileEntry, m *store.Manif
 					continue
 				}
 			}
-			fh, chunks, err := st.PutFileContent(data)
+			var chunks []store.ChunkRef
+			fh, chunks, err := putFile(st, data, opts.Chunk)
 			if err != nil {
 				return err
 			}

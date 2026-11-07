@@ -54,7 +54,7 @@ func TestChunkedIngestRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{})
+	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{Chunk: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,7 +98,7 @@ func TestRepackChunkFrames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{})
+	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{Chunk: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +166,7 @@ func TestChunkedAccounting(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{})
+	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{Chunk: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +189,7 @@ func TestManifestCompressedV2(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{})
+	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{Chunk: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,7 +243,7 @@ func TestGCKeepsChunkBlobs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{})
+	m, err := ingest.IngestPath(st, src, "t", ingest.IngestOptions{Chunk: true})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -137,6 +137,7 @@ func cmdStore(args []string) error {
 	sdir := fs.String("store", "", "store root (default $STACKFOLD_STORE or ./.squish)")
 	name := fs.String("name", "", "manifest name (default source basename)")
 	noElide := fs.Bool("no-elide", false, "store regenerable files too")
+	chunk := fs.Bool("chunk", false, "experimental: chunk large files content-defined (E1)")
 	fs.Parse(flagsFirst(fs, args))
 	if fs.NArg() == 0 {
 		return fmt.Errorf("store: need a source (docker save tar or directory)")
@@ -152,7 +153,7 @@ func cmdStore(args []string) error {
 			nm = strings.TrimSuffix(nm, ".tar")
 		}
 		fmt.Printf("storing %s\n", src)
-		m, err := ingest.IngestPath(st, src, nm, ingest.IngestOptions{Elide: !*noElide})
+		m, err := ingest.IngestPath(st, src, nm, ingest.IngestOptions{Elide: !*noElide, Chunk: *chunk})
 		if err != nil {
 			return err
 		}
