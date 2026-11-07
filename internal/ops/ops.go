@@ -32,6 +32,8 @@ func readEntryData(st *store.Store, e store.FileEntry) ([]byte, error) {
 		return st.ReadDelta(e.Hash, e.Base)
 	case store.KindCold:
 		return st.ReadColdEntry(&e)
+	case store.KindChunked:
+		return st.ReadChunked(&e)
 	}
 	return nil, fmt.Errorf("%s: kind %q has no stored content", e.Path, e.Kind)
 }
@@ -88,6 +90,15 @@ func Verify(st *store.Store, m *store.Manifest) (checked, bad int, err error) {
 			if int64(len(data)) != e.Size || store.HashBytes(data) != e.Hash {
 				bad++
 			}
+		case store.KindChunked:
+			data, err := st.ReadChunked(&e)
+			if err != nil {
+				return checked, bad, fmt.Errorf("%s: %w", e.Path, err)
+			}
+			checked++
+			if int64(len(data)) != e.Size || store.HashBytes(data) != e.Hash {
+				bad++
+			}
 		}
 	}
 	if m.ImageConfig != "" {
@@ -106,29 +117,51 @@ func Verify(st *store.Store, m *store.Manifest) (checked, bad int, err error) {
 // Stats summarizes a manifest against the store.
 func Stats(st *store.Store, m *store.Manifest) error {
 	blobBytes := map[string]int64{}
-	frameBytes := map[string]int64{}
+	frameDone := map[string]bool{}
 	var stored int64
+	addFrame := func(gid string) error {
+		if frameDone[gid] {
+			return nil
+		}
+		sz, err := st.FrameBytes(gid)
+		if err != nil {
+			return err
+		}
+		stored += sz
+		frameDone[gid] = true
+		return nil
+	}
+	addBlob := func(hash string) error {
+		if _, ok := blobBytes[hash]; ok {
+			return nil
+		}
+		sz, err := st.BlobSize(hash)
+		if err != nil {
+			return err
+		}
+		blobBytes[hash] = sz
+		stored += sz
+		return nil
+	}
 	for _, e := range m.Files {
 		switch e.Kind {
 		case store.KindFile:
-			if _, ok := blobBytes[e.Hash]; !ok {
-				sz, err := st.BlobSize(e.Hash)
-				if err != nil {
-					return err
-				}
-				blobBytes[e.Hash] = sz
-				stored += sz
+			if err := addBlob(e.Hash); err != nil {
+				return err
 			}
 		case store.KindFrame:
-			if _, ok := frameBytes[e.Frame]; !ok {
-				for _, p := range []string{st.FramePath(e.Frame), st.FrameDictPath(e.Frame), st.FrameIndexPath(e.Frame)} {
-					fi, err := os.Stat(p)
-					if err != nil {
+			if err := addFrame(e.Frame); err != nil {
+				return err
+			}
+		case store.KindChunked:
+			for _, c := range e.Chunks {
+				if c.Frame != "" {
+					if err := addFrame(c.Frame); err != nil {
 						return err
 					}
-					stored += fi.Size()
+				} else if err := addBlob(c.Hash); err != nil {
+					return err
 				}
-				frameBytes[e.Frame] = 1
 			}
 		}
 	}
@@ -141,7 +174,10 @@ func Stats(st *store.Store, m *store.Manifest) error {
 	fmt.Printf("raw content     %d B\n", m.RawBytes)
 	fmt.Printf("elided (regen)  %d B\n", m.ElidedBytes)
 	fmt.Printf("dedup savings   %d B\n", m.DedupBytes)
-	if comp := m.RawBytes - m.ElidedBytes - m.DedupBytes - stored; comp > 0 {
+	if m.ChunkDedupBytes > 0 {
+		fmt.Printf("chunk dedup     %d B\n", m.ChunkDedupBytes)
+	}
+	if comp := m.RawBytes - m.ElidedBytes - m.DedupBytes - m.ChunkDedupBytes - stored; comp > 0 {
 		fmt.Printf("compression     %d B\n", comp)
 	}
 	fmt.Printf("stored          %d B (%.1f%% of raw)\n", stored, pct)
@@ -201,6 +237,86 @@ func Repack(st *store.Store, m *store.Manifest, maxFile, minGroup int, force boo
 		groups++
 		moved += len(es)
 	}
+	// chunk frames: every chunked entry's not-yet-framed chunks go
+	// into per-manifest chunk frames, each unique chunk stored once
+	// with the dictionary benefit. Chunk refs are rewritten to point
+	// into the frame; cross-manifest shared chunks keep their blobs.
+	var chunkEntries []*store.FileEntry
+	for i := range m.Files {
+		if m.Files[i].Kind == store.KindChunked {
+			chunkEntries = append(chunkEntries, &m.Files[i])
+		}
+	}
+	if len(chunkEntries) > 0 {
+		refsByHash := map[string][]*store.ChunkRef{}
+		uniq := map[string]bool{}
+		var order []string
+		for _, e := range chunkEntries {
+			for i := range e.Chunks {
+				c := &e.Chunks[i]
+				if c.Frame != "" {
+					continue
+				}
+				if !uniq[c.Hash] {
+					uniq[c.Hash] = true
+					order = append(order, c.Hash)
+				}
+				refsByHash[c.Hash] = append(refsByHash[c.Hash], c)
+			}
+		}
+		sort.Strings(order)
+		if len(order) > 0 {
+			dict, err := buildChunkDict(st, order, uniq)
+			if err != nil {
+				return groups, moved, err
+			}
+			const rollLimit = 96 << 20
+			var payload []byte
+			var idx []store.FrameFileEntry
+			var rollRefs []string
+			flush := func() error {
+				if len(payload) == 0 {
+					return nil
+				}
+				gid := "c" + store.RandomID(8)
+				if err := st.WriteFrame(gid, dict, idx, payload); err != nil {
+					return err
+				}
+				for _, h := range rollRefs {
+					for _, c := range refsByHash[h] {
+						c.Frame = gid
+						c.Offset = offsetOf(idx, "c"+h)
+						c.Clen = clenOf(idx, "c"+h)
+					}
+				}
+				groups++
+				payload, idx, rollRefs = nil, nil, nil
+				return nil
+			}
+			for _, h := range order {
+				raw, err := st.ReadBlob(h)
+				if err != nil {
+					return groups, moved, err
+				}
+				comp, err := encodeWithDict(raw, dict)
+				if err != nil {
+					return groups, moved, err
+				}
+				idx = append(idx, store.FrameFileEntry{Path: "c" + h, Offset: int64(len(payload)), Clen: int64(len(comp)), Size: int64(len(raw))})
+				payload = append(payload, comp...)
+				rollRefs = append(rollRefs, h)
+				if len(payload) >= rollLimit {
+					if err := flush(); err != nil {
+						return groups, moved, err
+					}
+				}
+			}
+			if err := flush(); err != nil {
+				return groups, moved, err
+			}
+			moved += len(chunkEntries)
+		}
+	}
 	if err := st.SaveManifest(m); err != nil {
 		return groups, moved, err
 	}
@@ -210,6 +326,42 @@ func Repack(st *store.Store, m *store.Manifest, maxFile, minGroup int, force boo
 	}
 	fmt.Printf("repacked %d groups (%d files) into dictionary frames, %d blobs reclaimed\n", groups, moved, n)
 	return groups, moved, nil
+}
+
+// buildChunkDict builds a frame dictionary from a sample of the group's
+// largest unique chunks: context shared across the batch without a trainer.
+func buildChunkDict(st *store.Store, hashes []string, uniq map[string]bool) ([]byte, error) {
+	type cs struct {
+		h string
+		n int64
+	}
+	var sized []cs
+	for _, h := range hashes {
+		if !uniq[h] {
+			continue
+		}
+		sz, err := st.BlobSize(h)
+		if err != nil {
+			return nil, err
+		}
+		sized = append(sized, cs{h, sz})
+	}
+	sort.Slice(sized, func(i, j int) bool { return sized[i].n > sized[j].n })
+	var dict []byte
+	for i := 0; i < len(sized) && i < 8 && len(dict) < 96*1024; i++ {
+		raw, err := st.ReadBlob(sized[i].h)
+		if err != nil {
+			return nil, err
+		}
+		if len(dict)+len(raw) > 96*1024 {
+			raw = raw[:96*1024-len(dict)]
+		}
+		dict = append(dict, raw...)
+	}
+	if len(dict) == 0 {
+		return nil, fmt.Errorf("empty dictionary")
+	}
+	return dict, nil
 }
 
 func offsetOf(idx []store.FrameFileEntry, p string) int64 {

@@ -49,12 +49,12 @@ func makeDockerSaveCfg(t *testing.T, gz bool, config []byte) string {
 		return layer{name: name, tar: buf.Bytes()}
 	}
 	l1 := mk("abc123/layer.tar", map[string]string{
-		"base.txt":   "base layer file\n",
-		"app/run.py": "print('v1')\n",
+		"base.txt":    "base layer file\n",
+		"app/run.py":  "print('v1')\n",
 		"dir/one.txt": "one\n",
 	}, nil)
 	l2 := mk("def456/layer.tar", map[string]string{
-		"app/run.py": "print('v2')\n",
+		"app/run.py":  "print('v2')\n",
 		"dir/two.txt": "two\n",
 	}, []string{"dir/.wh.one.txt"})
 	man, _ := json.Marshal([]dockerManifestEntry{{
@@ -157,8 +157,8 @@ func testDockerSave(t *testing.T, gz bool) {
 	}
 }
 
-func TestDockerSave(t *testing.T)      { testDockerSave(t, false) }
-func TestDockerSaveGz(t *testing.T)    { testDockerSave(t, true) }
+func TestDockerSave(t *testing.T)   { testDockerSave(t, false) }
+func TestDockerSaveGz(t *testing.T) { testDockerSave(t, true) }
 
 func TestDedupAcrossCopies(t *testing.T) {
 	st, err := store.Open(t.TempDir() + "/store")

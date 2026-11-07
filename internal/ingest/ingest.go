@@ -91,12 +91,17 @@ func ingestDir(st *store.Store, root, name string, opts IngestOptions) (*store.M
 					return nil
 				}
 			}
-			hash, err := st.PutBlob(data)
+			fh, chunks, err := st.PutFileContent(data)
 			if err != nil {
 				return err
 			}
-			e.Kind = store.KindFile
-			e.Hash = hash
+			e.Hash = fh
+			if len(chunks) > 0 {
+				e.Kind = store.KindChunked
+				e.Chunks = chunks
+			} else {
+				e.Kind = store.KindFile
+			}
 			m.Files = append(m.Files, e)
 		default:
 			m.Files = append(m.Files, store.FileEntry{Path: rel, Kind: store.KindSpecial})
@@ -251,7 +256,8 @@ func ingestDockerSave(st *store.Store, path, name string, opts IngestOptions) (*
 	return tallyDedup(m), nil
 }
 
-// tallyDedup counts occurrences beyond the first per content hash.
+// tallyDedup counts occurrences beyond the first per content hash,
+// whole files and chunks alike.
 func tallyDedup(m *store.Manifest) *store.Manifest {
 	seen := map[string]int{}
 	for _, e := range m.Files {
@@ -259,6 +265,18 @@ func tallyDedup(m *store.Manifest) *store.Manifest {
 			seen[e.Hash]++
 			if seen[e.Hash] > 1 {
 				m.DedupBytes += e.Size
+			}
+		}
+	}
+	seenChunk := map[string]bool{}
+	for _, e := range m.Files {
+		if e.Kind == store.KindChunked {
+			for _, c := range e.Chunks {
+				if seenChunk[c.Hash] {
+					m.ChunkDedupBytes += c.Size
+				} else {
+					seenChunk[c.Hash] = true
+				}
 			}
 		}
 	}
@@ -346,12 +364,17 @@ func applyLayer(lr *tar.Reader, state map[string]store.FileEntry, m *store.Manif
 					continue
 				}
 			}
-			hash, err := st.PutBlob(data)
+			fh, chunks, err := st.PutFileContent(data)
 			if err != nil {
 				return err
 			}
-			e.Kind = store.KindFile
-			e.Hash = hash
+			e.Hash = fh
+			if len(chunks) > 0 {
+				e.Kind = store.KindChunked
+				e.Chunks = chunks
+			} else {
+				e.Kind = store.KindFile
+			}
 			state[n] = e
 		case tar.TypeSymlink:
 			state[n] = store.FileEntry{Path: n, Mode: 0o777, Kind: store.KindSymlink, Link: hdr.Linkname}

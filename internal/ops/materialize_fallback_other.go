@@ -35,7 +35,7 @@ func materializeFallback(st *store.Store, m *store.Manifest, out string, useHard
 			if err := ensureInsideOut(out, dst); err != nil {
 				return files, err
 			}
-		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold:
+		case store.KindFile, store.KindChunked, store.KindFrame, store.KindDelta, store.KindCold:
 			if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 				return files, err
 			}

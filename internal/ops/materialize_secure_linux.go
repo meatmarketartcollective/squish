@@ -49,7 +49,7 @@ func materializeSecure(st *store.Store, m *store.Manifest, out string, useHardli
 			if err := secureMkdirAll(root, e.Path, os.FileMode(e.Mode)|0o700); err != nil {
 				return files, fmt.Errorf("%s: %w", e.Path, err)
 			}
-		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold:
+		case store.KindFile, store.KindChunked, store.KindFrame, store.KindDelta, store.KindCold:
 			parent, base, err := secureParent(root, e.Path, true)
 			if err != nil {
 				return files, fmt.Errorf("%s: %w", e.Path, err)

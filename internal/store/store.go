@@ -17,12 +17,13 @@ import (
 	"golang.org/x/crypto/blake2b"
 )
 
-const StoreVersion = 1
+const StoreVersion = 2
 
 // Kinds for manifest entries.
 const (
 	KindDir     = "dir"
-	KindFile    = "file" // unique blob in the store
+	KindFile    = "file"    // unique blob in the store
+	KindChunked = "chunked" // file stored as content-defined chunk blobs
 	KindFrame   = "frame"
 	KindSymlink = "symlink"
 	KindLink    = "hardlink"
@@ -31,31 +32,44 @@ const (
 )
 
 type FileEntry struct {
-	Path   string `json:"path"`
+	Path   string     `json:"path"`
+	Size   int64      `json:"size"`
+	Mode   uint32     `json:"mode"`
+	Kind   string     `json:"kind"`
+	Hash   string     `json:"hash,omitempty"`
+	Link   string     `json:"link,omitempty"`
+	Frame  string     `json:"frame,omitempty"`
+	Base   string     `json:"base,omitempty"`
+	Filter string     `json:"filter,omitempty"`
+	Offset int64      `json:"offset,omitempty"`
+	Clen   int64      `json:"clen,omitempty"`
+	Reason string     `json:"reason,omitempty"`
+	Chunks []ChunkRef `json:"chunks,omitempty"`
+}
+
+// ChunkRef points at one content-defined chunk of a chunked file. At
+// ingest the chunk is a plain blob; after repack it lives inside the
+// manifest's chunk frame at Offset/Clen.
+type ChunkRef struct {
+	Hash   string `json:"hash"`
 	Size   int64  `json:"size"`
-	Mode   uint32 `json:"mode"`
-	Kind   string `json:"kind"`
-	Hash   string `json:"hash,omitempty"`
-	Link   string `json:"link,omitempty"`
 	Frame  string `json:"frame,omitempty"`
-	Base   string `json:"base,omitempty"`
-	Filter string `json:"filter,omitempty"`
 	Offset int64  `json:"offset,omitempty"`
 	Clen   int64  `json:"clen,omitempty"`
-	Reason string `json:"reason,omitempty"`
 }
 
 type Manifest struct {
-	Version     int         `json:"version"`
-	Name        string      `json:"name"`
-	Created     time.Time   `json:"created"`
-	Source      string      `json:"source"`
-	Layers      []string    `json:"layers,omitempty"`
-	Files       []FileEntry `json:"files"`
-	RawBytes    int64       `json:"raw_bytes"`
-	DedupBytes  int64       `json:"dedup_bytes"`
-	ElidedBytes int64       `json:"elided_bytes"`
-	StoredBytes int64       `json:"stored_bytes"`
+	Version         int         `json:"version"`
+	Name            string      `json:"name"`
+	Created         time.Time   `json:"created"`
+	Source          string      `json:"source"`
+	Layers          []string    `json:"layers,omitempty"`
+	Files           []FileEntry `json:"files"`
+	RawBytes        int64       `json:"raw_bytes"`
+	DedupBytes      int64       `json:"dedup_bytes"`
+	ElidedBytes     int64       `json:"elided_bytes"`
+	StoredBytes     int64       `json:"stored_bytes"`
+	ChunkDedupBytes int64       `json:"chunk_dedup_bytes,omitempty"`
 
 	// reclaim/restore: original image config blob hash and repo tags
 	ImageConfig string   `json:"image_config,omitempty"`
@@ -94,9 +108,20 @@ func (s *Store) blobPath(hash string) string {
 func (s *Store) FramePath(gid string) string     { return filepath.Join(s.Root, "frames", gid+".zst") }
 func (s *Store) FrameDictPath(gid string) string { return filepath.Join(s.Root, "frames", gid+".dict") }
 func (s *Store) FrameIndexPath(gid string) string {
+	return filepath.Join(s.Root, "frames", gid+".idx.zst")
+}
+
+// legacyFrameIndexPath is where frame indexes lived before store v2.
+func (s *Store) legacyFrameIndexPath(gid string) string {
 	return filepath.Join(s.Root, "frames", gid+".idx.json")
 }
+
 func (s *Store) ManifestPath(name string) string {
+	return filepath.Join(s.Root, "manifests", name+".json.zst")
+}
+
+// legacyManifestPath is where manifests lived before store v2.
+func (s *Store) legacyManifestPath(name string) string {
 	return filepath.Join(s.Root, "manifests", name+".json")
 }
 
@@ -193,7 +218,43 @@ func (s *Store) WriteFrame(gid string, dict []byte, files []FrameFileEntry, payl
 	}
 	idx := FrameIndex{GID: gid, Files: files}
 	b, _ := json.Marshal(idx)
-	return os.WriteFile(s.FrameIndexPath(gid), b, 0o644)
+	comp, err := EncodeAllFast(b)
+	if err != nil {
+		return err
+	}
+	tmp := s.FrameIndexPath(gid) + ".tmp" + RandomID(4)
+	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.FrameIndexPath(gid)); err != nil {
+		return err
+	}
+	_ = os.Remove(s.legacyFrameIndexPath(gid))
+	return nil
+}
+
+// ReadFrameIndex loads a frame index, reading the compressed v2 form or
+// the legacy plain-JSON form.
+func (s *Store) ReadFrameIndex(gid string) (*FrameIndex, error) {
+	b, err := os.ReadFile(s.FrameIndexPath(gid))
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		b, err = os.ReadFile(s.legacyFrameIndexPath(gid))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		if b, err = DecodeAll(b); err != nil {
+			return nil, fmt.Errorf("frame index %s: %w", gid, err)
+		}
+	}
+	var idx FrameIndex
+	if err := json.Unmarshal(b, &idx); err != nil {
+		return nil, err
+	}
+	return &idx, nil
 }
 
 func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
@@ -216,6 +277,56 @@ func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
 	}
 	defer dec.Close()
 	return dec.DecodeAll(chunk, nil)
+}
+
+// ReadChunked reassembles a chunked file from its chunk list, reading
+// each chunk from its blob or, after repack, from its frame. Chunks are
+// visited in file order so the read stays sequential over the file's
+// own chunks.
+func (s *Store) ReadChunked(e *FileEntry) ([]byte, error) {
+	out := make([]byte, 0, e.Size)
+	for i := range e.Chunks {
+		c := &e.Chunks[i]
+		var data []byte
+		var err error
+		if c.Frame != "" {
+			data, err = s.ReadFrameFile(c.Frame, c.Offset, c.Clen)
+		} else {
+			data, err = s.ReadBlob(c.Hash)
+		}
+		if err != nil {
+			return nil, err
+		}
+		if int64(len(data)) != c.Size {
+			return nil, fmt.Errorf("chunk %s: size mismatch (%d != %d)", c.Hash[:12], len(data), c.Size)
+		}
+		out = append(out, data...)
+	}
+	return out, nil
+}
+
+// PutFileContent stores data as one whole-file blob (small files) or as
+// content-defined chunks (files at least ChunkMinFile bytes), returning
+// the file's whole-content hash and its chunk list. Chunks and files
+// share the blob store, so dedup spans both.
+func (s *Store) PutFileContent(data []byte) (string, []ChunkRef, error) {
+	fh := HashBytes(data)
+	if len(data) < ChunkMinFile {
+		if _, err := s.PutBlob(data); err != nil {
+			return "", nil, err
+		}
+		return fh, nil, nil
+	}
+	parts := ChunkData(data, MinChunkSize, AvgChunkSize, MaxChunkSize)
+	refs := make([]ChunkRef, 0, len(parts))
+	for _, p := range parts {
+		h, err := s.PutBlob(p)
+		if err != nil {
+			return "", nil, err
+		}
+		refs = append(refs, ChunkRef{Hash: h, Size: int64(len(p))})
+	}
+	return fh, refs, nil
 }
 
 // SaveManifest writes the manifest JSON atomically and computes StoredBytes.
@@ -255,16 +366,36 @@ func (s *Store) SaveManifest(m *Manifest) error {
 				}
 				stored += sz
 			}
-		case KindFrame:
-			if !seenFrame[e.Frame] {
-				seenFrame[e.Frame] = true
-				for _, p := range []string{s.FramePath(e.Frame), s.FrameDictPath(e.Frame), s.FrameIndexPath(e.Frame)} {
-					fi, err := os.Stat(p)
+		case KindChunked:
+			for _, c := range e.Chunks {
+				if c.Frame != "" {
+					if !seenFrame[c.Frame] {
+						seenFrame[c.Frame] = true
+						sz, err := s.frameBytes(c.Frame)
+						if err != nil {
+							return err
+						}
+						stored += sz
+					}
+					continue
+				}
+				if !seenBlob[c.Hash] {
+					seenBlob[c.Hash] = true
+					sz, err := s.BlobSize(c.Hash)
 					if err != nil {
 						return err
 					}
-					stored += fi.Size()
+					stored += sz
 				}
+			}
+		case KindFrame:
+			if !seenFrame[e.Frame] {
+				seenFrame[e.Frame] = true
+				sz, err := s.frameBytes(e.Frame)
+				if err != nil {
+					return err
+				}
+				stored += sz
 			}
 		}
 	}
@@ -275,20 +406,73 @@ func (s *Store) SaveManifest(m *Manifest) error {
 	if err != nil {
 		return err
 	}
-	tmp := s.ManifestPath(m.Name) + ".tmp" + RandomID(4)
-	if err := os.WriteFile(tmp, b, 0o644); err != nil {
+	comp, err := EncodeAllFast(b)
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.ManifestPath(m.Name))
+	tmp := s.ManifestPath(m.Name) + ".tmp" + RandomID(4)
+	if err := os.WriteFile(tmp, comp, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.ManifestPath(m.Name)); err != nil {
+		return err
+	}
+	// store v2 keeps manifests compressed; drop any legacy plain copy
+	_ = os.Remove(s.legacyManifestPath(m.Name))
+	return nil
+}
+
+// FrameBytes totals a frame's on-disk footprint: payload, dictionary
+// and (compressed) index.
+func (s *Store) FrameBytes(gid string) (int64, error) {
+	var total int64
+	for _, p := range []string{s.FramePath(gid), s.FrameDictPath(gid), s.FrameIndexPath(gid)} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return 0, err
+		}
+		total += fi.Size()
+	}
+	return total, nil
+}
+
+// frameBytes totals a frame's on-disk footprint: payload, dictionary
+// and (compressed) index.
+func (s *Store) frameBytes(gid string) (int64, error) {
+	var total int64
+	for _, p := range []string{s.FramePath(gid), s.FrameDictPath(gid), s.FrameIndexPath(gid)} {
+		fi, err := os.Stat(p)
+		if err != nil {
+			return 0, err
+		}
+		total += fi.Size()
+	}
+	return total, nil
 }
 
 func (s *Store) LoadManifest(name string) (*Manifest, error) {
 	b, err := os.ReadFile(s.ManifestPath(name))
 	if err != nil {
-		return nil, err
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		// store v1 kept manifests as plain JSON
+		b, err = os.ReadFile(s.legacyManifestPath(name))
+		if err != nil {
+			return nil, err
+		}
+		var m1 Manifest
+		if jerr := json.Unmarshal(b, &m1); jerr != nil {
+			return nil, jerr
+		}
+		return &m1, nil
+	}
+	dec, err := DecodeAll(b)
+	if err != nil {
+		return nil, fmt.Errorf("manifest %s: %w", name, err)
 	}
 	var m Manifest
-	if err := json.Unmarshal(b, &m); err != nil {
+	if err := json.Unmarshal(dec, &m); err != nil {
 		return nil, err
 	}
 	return &m, nil
@@ -318,6 +502,12 @@ func (s *Store) DeleteOrphanBlobs(m *Manifest, force bool) (int, error) {
 		switch e.Kind {
 		case KindFile:
 			ref[e.Hash] = true
+		case KindChunked:
+			for _, c := range e.Chunks {
+				if c.Frame == "" {
+					ref[c.Hash] = true
+				}
+			}
 		case KindDelta:
 			ref[e.Base] = true
 		}

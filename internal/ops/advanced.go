@@ -125,6 +125,12 @@ func referencedHashes(manifests []*store.Manifest) map[string]bool {
 			switch e.Kind {
 			case store.KindFile:
 				ref[e.Hash] = true
+			case store.KindChunked:
+				for _, c := range e.Chunks {
+					if c.Frame == "" {
+						ref[c.Hash] = true
+					}
+				}
 			case store.KindDelta:
 				ref[e.Base] = true
 			}

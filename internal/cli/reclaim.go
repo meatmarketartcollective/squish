@@ -337,6 +337,8 @@ func readEntryContent(st *store.Store, e store.FileEntry) ([]byte, error) {
 		return st.ReadDelta(e.Hash, e.Base)
 	case store.KindCold:
 		return st.ReadColdEntry(&e)
+	case store.KindChunked:
+		return st.ReadChunked(&e)
 	}
 	return nil, nil // dir, symlink, hardlink, elided, special: no content
 }
@@ -368,7 +370,7 @@ func writeSquashLayer(st *store.Store, m *store.Manifest, path string) (string, 
 			if err := tw.WriteHeader(hdr); err != nil {
 				return err
 			}
-		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold:
+		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold, store.KindChunked:
 			data, err := readEntryContent(st, e)
 			if err != nil {
 				return err

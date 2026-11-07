@@ -27,7 +27,7 @@ func NewTree(st *store.Store, m *store.Manifest) *Tree {
 		switch e.Kind {
 		case store.KindDir:
 			t.dirs[p] = true
-		case store.KindFile, store.KindFrame, store.KindDelta, store.KindCold, store.KindSymlink, store.KindLink, store.KindElided, store.KindSpecial:
+		case store.KindFile, store.KindChunked, store.KindFrame, store.KindDelta, store.KindCold, store.KindSymlink, store.KindLink, store.KindElided, store.KindSpecial:
 			t.files[p] = e
 			for d := path.Dir(p); d != "." && d != "/"; d = path.Dir(d) {
 				t.dirs[d] = true
@@ -105,6 +105,8 @@ func (t *Tree) ReadFile(e *store.FileEntry) ([]byte, error) {
 		return t.st.ReadDelta(e.Hash, e.Base)
 	case store.KindCold:
 		return t.st.ReadColdEntry(e)
+	case store.KindChunked:
+		return t.st.ReadChunked(e)
 	case store.KindLink:
 		// A hardlink may point at another hardlink; follow the chain to
 		// its ultimate file and refuse cycles.

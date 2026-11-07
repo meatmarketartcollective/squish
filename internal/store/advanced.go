@@ -251,9 +251,23 @@ func (s *Store) ListManifests() ([]string, error) {
 		return nil, err
 	}
 	var names []string
+	seen := map[string]bool{}
 	for _, e := range ents {
-		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
-			names = append(names, strings.TrimSuffix(e.Name(), ".json"))
+		name := e.Name()
+		if e.IsDir() {
+			continue
+		}
+		switch {
+		case strings.HasSuffix(name, ".json.zst"):
+			name = strings.TrimSuffix(name, ".json.zst")
+		case strings.HasSuffix(name, ".json"):
+			name = strings.TrimSuffix(name, ".json")
+		default:
+			continue
+		}
+		if !seen[name] {
+			seen[name] = true
+			names = append(names, name)
 		}
 	}
 	sort.Strings(names)
