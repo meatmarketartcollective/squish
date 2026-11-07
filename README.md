@@ -45,6 +45,8 @@ That puts the right binary for your machine in ~/.local/bin. Prefer manual: grab
 
 `reclaim` saves each tagged image, verifies the stored copy byte-for-byte, and only then removes the original (pass --keep to leave images in place). `restore` rebuilds the image as a single squashed layer and loads it with docker. Names are the image ref with / : @ replaced by _.
 
+`ls` and `stats` share one accounting engine. Shared objects are counted once in the store total (the old per-image sum double-counted them); each image's REMOVING FREES number is its unique bytes, what deleting that image would actually give back; and objects on disk that nothing references are listed as gc candidates.
+
 ## Use
 
   squish store    [--store DIR] [--name NAME] [--no-elide] SOURCE...

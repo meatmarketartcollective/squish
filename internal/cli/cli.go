@@ -241,7 +241,36 @@ func cmdStats(args []string) error {
 	if err != nil {
 		return err
 	}
-	return ops.Stats(st, m)
+	if err := ops.Stats(st, m); err != nil {
+		return err
+	}
+	names, err := st.ListManifests()
+	if err != nil {
+		return err
+	}
+	var ms []*store.Manifest
+	for _, n := range names {
+		if om, err := st.LoadManifest(n); err == nil {
+			ms = append(ms, om)
+		}
+	}
+	if len(ms) < 2 {
+		return nil // nothing shared with anyone yet
+	}
+	acc, err := st.AccountStore(ms)
+	if err != nil {
+		return nil // per-image stats above are still valid; store may be broken
+	}
+	for _, ia := range acc.Images {
+		if ia.Name != m.Name {
+			continue
+		}
+		if ia.Shared > 0 {
+			fmt.Printf("shared w/ others %d B\n", ia.Shared)
+		}
+		fmt.Printf("removing frees  %d B\n", ia.Unique)
+	}
+	return nil
 }
 
 func cmdRepack(args []string) error {

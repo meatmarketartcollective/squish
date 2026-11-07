@@ -577,19 +577,67 @@ func cmdLs(args []string) error {
 		fmt.Println("nothing stored yet (squish reclaim does it in one command)")
 		return nil
 	}
-	fmt.Printf("%-32s %-10s %-10s %s\n", "NAME", "RAW", "STORED", "SAVED")
-	var tRaw, tStored int64
+	var ms []*store.Manifest
+	var unreadable []string
 	for _, n := range names {
 		m, err := st.LoadManifest(n)
 		if err != nil {
-			fmt.Printf("%-32s unreadable: %v\n", n, err)
+			unreadable = append(unreadable, fmt.Sprintf("%s (%v)", n, err))
 			continue
 		}
+		ms = append(ms, m)
+	}
+	if len(ms) == 0 {
+		for _, u := range unreadable {
+			fmt.Printf("%-32s unreadable\n", u)
+		}
+		return nil
+	}
+	acc, accErr := st.AccountStore(ms)
+	if accErr != nil {
+		// accounting that lies is worse than none: fall back to the old
+		// per-manifest table and say why the honest numbers are missing
+		fmt.Printf("warning: store accounting incomplete: %v\n", accErr)
+	}
+	fmt.Printf("%-32s %-10s %-10s %-8s %s\n", "NAME", "RAW", "STORED", "SAVED", "REMOVING FREES")
+	if accErr == nil {
+		for _, ia := range acc.Images {
+			pct := 0
+			if ia.Raw > 0 {
+				pct = int(100 - 100*ia.Stored/ia.Raw)
+			}
+			fmt.Printf("%-32s %-10s %-10s %-8s %s\n", ia.Name, human(ia.Raw), human(ia.Stored), fmt.Sprintf("%d%%", pct), human(ia.Unique))
+		}
+		for _, u := range unreadable {
+			fmt.Printf("%-32s unreadable (excluded from totals)\n", u)
+		}
+		base := acc.TotalRaw - acc.TotalElided
+		tp := 0
+		if base > 0 {
+			tp = int(100 - 100*acc.Physical/base)
+		}
+		fmt.Printf("%-32s %-10s %-10s %-8s %s\n", "TOTAL", human(acc.TotalRaw), human(acc.Physical), fmt.Sprintf("%d%%", tp), "")
+		var totalUnique int64
+		for _, ia := range acc.Images {
+			totalUnique += ia.Unique
+		}
+		fmt.Println("stored once, shared across images:", human(acc.Physical-totalUnique))
+		if acc.TotalElided > 0 {
+			fmt.Println("elided (regenerable, not stored):", human(acc.TotalElided))
+		}
+		if acc.OrphanCount > 0 {
+			fmt.Printf("orphaned objects: %d file(s), %s (squish gc reclaims them)\n", acc.OrphanCount, human(acc.OrphanBytes))
+		}
+		return nil
+	}
+	// fallback table: the old per-manifest numbers, no cross-image honesty
+	var tRaw, tStored int64
+	for _, m := range ms {
 		pct := 0
 		if m.RawBytes > 0 {
 			pct = int(100 - 100*m.StoredBytes/m.RawBytes)
 		}
-		fmt.Printf("%-32s %-10s %-10s %d%%\n", m.Name, human(m.RawBytes), human(m.StoredBytes), pct)
+		fmt.Printf("%-32s %-10s %-10s %-8s %s\n", m.Name, human(m.RawBytes), human(m.StoredBytes), fmt.Sprintf("%d%%", pct), "")
 		tRaw += m.RawBytes
 		tStored += m.StoredBytes
 	}
@@ -597,6 +645,6 @@ func cmdLs(args []string) error {
 	if tRaw > 0 {
 		tp = int(100 - 100*tStored/tRaw)
 	}
-	fmt.Printf("%-32s %-10s %-10s %d%%\n", "TOTAL", human(tRaw), human(tStored), tp)
+	fmt.Printf("%-32s %-10s %-10s %-8s %s\n", "TOTAL", human(tRaw), human(tStored), fmt.Sprintf("%d%%", tp), "")
 	return nil
 }
