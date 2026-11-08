@@ -217,7 +217,12 @@ func ColdPass(st *store.Store, m *store.Manifest, minSize int64) (converted int,
 			converted++
 			continue
 		}
-		// x86 ELFs still go through an xz with BCJ support
+		// x86 ELFs still go through an xz with BCJ support; if the
+		// local xz cannot handle the filter, leave the file as a
+		// plain blob instead of failing the whole manifest
+		if !store.XZHasFilter(filter) {
+			continue
+		}
 		comp, err := store.CompressCold(filter, data)
 		if err != nil {
 			return converted, estSaved, err

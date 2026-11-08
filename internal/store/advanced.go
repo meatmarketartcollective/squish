@@ -169,6 +169,25 @@ func xzBinary() (string, error) {
 	return p, nil
 }
 
+// XZHasFilter reports whether the configured xz binary supports the
+// named BCJ filter ("arm64", "x86"). It probes with empty input, so it
+// is cheap to call per manifest.
+func XZHasFilter(filter string) bool {
+	arg, ok := map[string]string{"arm64": "--arm64", "x86": "--x86"}[filter]
+	if !ok {
+		return false
+	}
+	xz, err := xzBinary()
+	if err != nil {
+		return false
+	}
+	cmd := exec.Command(xz, "-6", "-c", "--check=crc32", arg)
+	if err := cmd.Run(); err != nil {
+		return false
+	}
+	return true
+}
+
 // CompressCold compresses data with xz -6 plus the named BCJ filter
 // ("arm64", "x86", or "" for none). The stream records its own filter.
 func CompressCold(filter string, data []byte) ([]byte, error) {
