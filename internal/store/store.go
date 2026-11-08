@@ -107,6 +107,11 @@ type Store struct {
 	spanMu   sync.Mutex
 	spanGid  string
 	spanData []byte
+
+	// decoded frame-index cache: a frame's index is small but reading
+	// it per file dominated verify on stream-frame stores
+	idxMu    sync.Mutex
+	idxCache map[string]FrameIndex
 }
 
 func Open(root string) (*Store, error) {
@@ -313,7 +318,7 @@ func (s *Store) ReadFrameIndex(gid string) (*FrameIndex, error) {
 }
 
 func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
-	idx, err := s.ReadFrameIndex(gid)
+	idx, err := s.cachedFrameIndex(gid)
 	if err != nil {
 		return nil, err
 	}
@@ -339,6 +344,27 @@ func (s *Store) ReadFrameFile(gid string, off, clen int64) ([]byte, error) {
 	}
 	defer dec.Close()
 	return dec.DecodeAll(chunk, nil)
+}
+
+// cachedFrameIndex returns a frame's index, decoding it once per
+// process; entries hold read-only data so sharing is safe.
+func (s *Store) cachedFrameIndex(gid string) (FrameIndex, error) {
+	s.idxMu.Lock()
+	defer s.idxMu.Unlock()
+	if s.idxCache == nil {
+		s.idxCache = map[string]FrameIndex{}
+	} else if idx, ok := s.idxCache[gid]; ok {
+		return idx, nil
+	} else if len(s.idxCache) >= 64 {
+		s.idxCache = map[string]FrameIndex{}
+	}
+	pi, err := s.ReadFrameIndex(gid)
+	if err != nil {
+		return FrameIndex{}, err
+	}
+	idx := *pi
+	s.idxCache[gid] = idx
+	return idx, nil
 }
 
 // readStreamSpan slices [off, off+clen) out of a stream frame's

@@ -52,7 +52,22 @@ func checkFile(dst string, e store.FileEntry) error {
 
 // Verify re-derives every file's hash from the store.
 func Verify(st *store.Store, m *store.Manifest) (checked, bad int, err error) {
-	for _, e := range m.Files {
+	// verify is order-independent, so frame entries are read grouped
+	// by frame and offset: that turns the store's roll cache into
+	// one decode per roll instead of one per straddling file
+	idxs := make([]int, len(m.Files))
+	for i := range idxs {
+		idxs[i] = i
+	}
+	sort.SliceStable(idxs, func(a, b int) bool {
+		fa, fb := m.Files[idxs[a]].Frame, m.Files[idxs[b]].Frame
+		if fa != fb {
+			return fa < fb
+		}
+		return m.Files[idxs[a]].Offset < m.Files[idxs[b]].Offset
+	})
+	for _, i := range idxs {
+		e := m.Files[i]
 		switch e.Kind {
 		case store.KindFile:
 			data, err := st.ReadBlob(e.Hash)
