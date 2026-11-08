@@ -51,6 +51,17 @@ func SweepStore(st *store.Store, rollLimit int64, sortMode string) (manifests, f
 		ms = append(ms, m)
 	}
 
+	// delta bases are read as raw blobs at read time (ReadBlob),
+	// so their blobs must stay on disk: never sweep them
+	bases := map[string]bool{}
+	for _, m := range ms {
+		for i := range m.Files {
+			if m.Files[i].Kind == store.KindDelta {
+				bases[m.Files[i].Base] = true
+			}
+		}
+	}
+
 	type spanRef struct {
 		gid       string
 		off, clen int64
@@ -101,7 +112,7 @@ func SweepStore(st *store.Store, rollLimit int64, sortMode string) (manifests, f
 		rep := map[string]string{} // hash -> smallest path seen
 		for _, m := range ms {
 			for _, e := range m.Files {
-				if e.Kind != store.KindFile {
+				if e.Kind != store.KindFile || bases[e.Hash] {
 					continue
 				}
 				if old, ok := rep[e.Hash]; !ok || e.Path < old {
@@ -126,7 +137,7 @@ func SweepStore(st *store.Store, rollLimit int64, sortMode string) (manifests, f
 		for _, m := range ms {
 			var es []store.FileEntry
 			for _, e := range m.Files {
-				if e.Kind == store.KindFile {
+				if e.Kind == store.KindFile && !bases[e.Hash] {
 					es = append(es, e)
 				}
 			}
@@ -146,7 +157,7 @@ func SweepStore(st *store.Store, rollLimit int64, sortMode string) (manifests, f
 	for _, m := range ms {
 		for i := range m.Files {
 			e := &m.Files[i]
-			if e.Kind != store.KindFile {
+			if e.Kind != store.KindFile || bases[e.Hash] {
 				continue
 			}
 			r, ok := swept[e.Hash]
