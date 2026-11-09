@@ -301,10 +301,13 @@ func openStoreAt(sdir string) (*store.Store, error) {
 func cmdAutotune(args []string) error {
 	fs := flag.NewFlagSet("autotune", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
-	rollMB := fs.Int("roll-mb", 128, "raw MiB per stream frame when applying")
-	sortMode := fs.String("sort", "path", "sweep order when applying")
+	rollMB := fs.Int("roll-mb", 128, "raw MiB per stream frame")
+	sortMode := fs.String("sort", "path", "sweep order")
 	sampleKB := fs.Int("sample-kb", 128, "plain bytes probed per blob")
-	apply := fs.Bool("apply", false, "run the winning pipeline after reporting")
+	try := fs.Bool("try", false, "measure candidate pipelines on scratch copies and keep the smallest")
+	quick := fs.Bool("quick", false, "with --try: only sweep and delta+sweep")
+	keepAll := fs.Bool("keep-all", false, "with --try: keep every candidate store")
+	promote := fs.Bool("promote", false, "with --try: move the winner over the original store")
 	fs.Parse(flagsFirst(fs, args))
 	st, err := openStoreAt(*sdir)
 	if err != nil {
@@ -329,20 +332,43 @@ func cmdAutotune(args []string) error {
 	fmt.Printf("store %d B, %d unique blobs (%d B raw), %d versioned paths\n", plan.StoreBytes, plan.UniqueFiles, plan.UniqueBytes, plan.VersionedPaths)
 	fmt.Printf("classes: window %d blobs (%d B) rate %.1f%% | cold %d ELFs (%d B) standalone %.1f%% | delta %d targets (%d B) out %.1f%%, %d bases (%d B) stay raw\n",
 		plan.WindowFiles, plan.WindowBytes, plan.WindowRate*100, plan.ColdFiles, plan.ColdBytes, plan.ColdRate*100, plan.DeltaFiles, plan.DeltaBytes, plan.DeltaRate*100, plan.BaseFiles, plan.BaseBytes)
-	for _, cand := range plan.Candidates {
-		mark := ""
-		if cand.Name == plan.Winner {
-			mark = "  <- winner"
-		}
-		fmt.Printf("  %-18s %12d B%s\n", cand.Name, cand.Bytes, mark)
-	}
-	if *apply {
-		final, err := ops.ApplyPlan(st, ms, plan, int64(*rollMB)<<20, *sortMode)
+	if *try {
+		res, winDir, err := ops.TryCandidates(st, int64(*rollMB)<<20, *sortMode, *quick, *keepAll)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("applied %s: store now %d B\n", plan.Winner, final)
+		for _, r := range res {
+			mark := ""
+			if r.Dir == winDir {
+				mark = "  <- winner"
+			}
+			fmt.Printf("  %-18s %12d B  %.0fs%s\n", r.Name, r.Bytes, r.Seconds, mark)
+		}
+		if winDir == "" {
+			return fmt.Errorf("autotune: no candidate produced a result")
+		}
+		if *promote {
+			bak := st.Root + ".pre-tune"
+			if err := os.Rename(st.Root, bak); err != nil {
+				return err
+			}
+			if err := os.Rename(winDir, st.Root); err != nil {
+				return err
+			}
+			fmt.Printf("promoted winner to %s (previous store kept at %s)\n", st.Root, bak)
+		} else {
+			fmt.Printf("winner store kept at %s\n", winDir)
+		}
+		return nil
 	}
+	for _, cand := range plan.Candidates {
+		mark := ""
+		if cand.Name == plan.Winner {
+			mark = "  <- probe pick"
+		}
+		fmt.Printf("  %-18s %12d B%s\n", cand.Name, cand.Bytes, mark)
+	}
+	fmt.Printf("(probe estimate: small sample windows miss long-range similarity, sweep rows run high)\n")
 	return nil
 }
 

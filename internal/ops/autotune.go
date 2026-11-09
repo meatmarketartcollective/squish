@@ -8,9 +8,12 @@ package ops
 // Probing is read-only; nothing is written unless ApplyPlan runs.
 
 import (
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/aloysiusvonfck/squish/internal/bcj"
 	"github.com/aloysiusvonfck/squish/internal/store"
@@ -417,4 +420,144 @@ func storeSize(root string) (int64, error) {
 		return nil
 	})
 	return n, err
+}
+
+type TuneResult struct {
+	Name    string
+	Bytes   int64
+	Seconds float64
+	Dir     string
+}
+
+type tuneCandidate struct {
+	Name  string
+	Steps []string
+}
+
+var tuneCandidates = []tuneCandidate{
+	{"sweep", []string{"sweep"}},
+	{"delta+sweep", []string{"delta", "sweep"}},
+	{"cold+sweep", []string{"cold", "sweep"}},
+	{"cold+delta+sweep", []string{"cold", "delta", "sweep"}},
+}
+
+// TryCandidates measures every candidate pipeline on a fresh copy of the
+// store and keeps the smallest result. Loser copies are deleted as soon
+// as a smaller candidate has been found, so at most two copies are on
+// disk at once. Returns the measured results and the winner's directory.
+func TryCandidates(st *store.Store, rollLimit int64, sortMode string, quick, keepAll bool) ([]TuneResult, string, error) {
+	cands := tuneCandidates
+	if quick {
+		cands = []tuneCandidate{cands[0], cands[1]}
+	}
+	parent := filepath.Dir(st.Root)
+	base := filepath.Base(st.Root)
+	best := -1
+	var res []TuneResult
+	for i, c := range cands {
+		dir := filepath.Join(parent, fmt.Sprintf("%s-tune%d", base, i+1))
+		os.RemoveAll(dir)
+		if err := copyDir(st.Root, dir); err != nil {
+			return res, "", err
+		}
+		cst, err := store.Open(dir)
+		if err != nil {
+			return res, "", err
+		}
+		names, err := cst.ListManifests()
+		if err != nil {
+			return res, "", err
+		}
+		var cms []*store.Manifest
+		for _, n := range names {
+			m, err := cst.LoadManifest(n)
+			if err != nil {
+				return res, "", err
+			}
+			cms = append(cms, m)
+		}
+		start := time.Now()
+		for _, step := range c.Steps {
+			switch step {
+			case "cold":
+				for _, m := range cms {
+					if _, _, err := ColdPass(cst, m, 1<<20, nil); err != nil {
+						return res, "", err
+					}
+				}
+				if _, _, err := GCAll(cst); err != nil {
+					return res, "", err
+				}
+			case "delta":
+				if _, _, err := DeltaPass(cst, cms, 32<<10, 8<<20, nil); err != nil {
+					return res, "", err
+				}
+				if _, _, err := GCAll(cst); err != nil {
+					return res, "", err
+				}
+			case "sweep":
+				if _, _, _, err := SweepStore(cst, rollLimit, sortMode); err != nil {
+					return res, "", err
+				}
+				if _, _, err := GCAll(cst); err != nil {
+					return res, "", err
+				}
+			}
+		}
+		secs := time.Since(start).Seconds()
+		sz, err := storeSize(dir)
+		if err != nil {
+			return res, "", err
+		}
+		res = append(res, TuneResult{c.Name, sz, secs, dir})
+		if best == -1 || sz < res[best].Bytes {
+			best = len(res) - 1
+		}
+		if !keepAll {
+			for j := range res {
+				if j != best && res[j].Dir != "" {
+					os.RemoveAll(res[j].Dir)
+					res[j].Dir = ""
+				}
+			}
+		}
+	}
+	if best == -1 {
+		return res, "", nil
+	}
+	return res, res[best].Dir, nil
+}
+
+// copyDir copies a store tree (plain files only, permissions kept).
+func copyDir(src, dst string) error {
+	return filepath.Walk(src, func(p string, fi os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		t := filepath.Join(dst, rel)
+		if fi.IsDir() {
+			return os.MkdirAll(t, fi.Mode().Perm())
+		}
+		if !fi.Mode().IsRegular() {
+			return nil
+		}
+		in, err := os.Open(p)
+		if err != nil {
+			return err
+		}
+		defer in.Close()
+		out, err := os.OpenFile(t, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, fi.Mode().Perm())
+		if err != nil {
+			return err
+		}
+		if _, err := io.Copy(out, in); err != nil {
+			out.Close()
+			return err
+		}
+		return out.Close()
+	})
 }
