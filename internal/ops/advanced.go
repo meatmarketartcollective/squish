@@ -20,7 +20,7 @@ import (
 // Only plain-file entries in the size window are considered.
 // Returns how many entries were converted and the estimated bytes saved
 // (only for blobs that become unreferenced, so it is what gc will free).
-func DeltaPass(st *store.Store, manifests []*store.Manifest, minFile, maxFile int64) (converted int, estSaved int64, err error) {
+func DeltaPass(st *store.Store, manifests []*store.Manifest, minFile, maxFile int64, only map[string]bool) (converted int, estSaved int64, err error) {
 	type entryRef struct {
 		m    *store.Manifest
 		idx  int
@@ -30,6 +30,9 @@ func DeltaPass(st *store.Store, manifests []*store.Manifest, minFile, maxFile in
 	for _, m := range manifests {
 		for i, e := range m.Files {
 			if e.Kind != store.KindFile || e.Size < minFile || e.Size > maxFile {
+				continue
+			}
+			if only != nil && !only[e.Path] {
 				continue
 			}
 			byPath[e.Path] = append(byPath[e.Path], entryRef{m, i, e.Hash})
@@ -160,7 +163,7 @@ func elfFilter(data []byte) string {
 // meant for binaries that are read once per image, never per run.
 // Files must be at least minSize bytes. Returns converted entries and
 // estimated bytes saved.
-func ColdPass(st *store.Store, m *store.Manifest, minSize int64) (converted int, estSaved int64, err error) {
+func ColdPass(st *store.Store, m *store.Manifest, minSize int64, only map[string]bool) (converted int, estSaved int64, err error) {
 	type res struct {
 		filter string
 		size   int64
@@ -169,6 +172,9 @@ func ColdPass(st *store.Store, m *store.Manifest, minSize int64) (converted int,
 	for i := range m.Files {
 		e := &m.Files[i]
 		if e.Kind != store.KindFile || e.Size < minSize {
+			continue
+		}
+		if only != nil && !only[e.Hash] {
 			continue
 		}
 		if r, ok := done[e.Hash]; ok {

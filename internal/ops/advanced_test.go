@@ -49,7 +49,7 @@ func TestDeltaPassRoundTrip(t *testing.T) {
 	m2 := newManifest(t, st, "v2", map[string][]byte{"usr/lib/libdemo.so.1": variant(base, 0x5A)})
 	m3 := newManifest(t, st, "v3", map[string][]byte{"usr/lib/libdemo.so.1": variant(base, 0xA5)})
 
-	conv, saved, err := DeltaPass(st, []*store.Manifest{m1, m2, m3}, 64, 1<<20)
+	conv, saved, err := DeltaPass(st, []*store.Manifest{m1, m2, m3}, 64, 1<<20, nil)
 	if err != nil {
 		t.Fatalf("DeltaPass: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestDeltaSkipsWhenNotSmaller(t *testing.T) {
 	b := bytes.Repeat([]byte{0xFF}, 4096)
 	m1 := newManifest(t, st, "one", map[string][]byte{"bin/x": a})
 	m2 := newManifest(t, st, "two", map[string][]byte{"bin/x": b})
-	_, _, err = DeltaPass(st, []*store.Manifest{m1, m2}, 64, 1<<20)
+	_, _, err = DeltaPass(st, []*store.Manifest{m1, m2}, 64, 1<<20, nil)
 	if err != nil {
 		t.Fatalf("DeltaPass: %v", err)
 	}
@@ -156,7 +156,7 @@ func TestColdPass(t *testing.T) {
 		elf[i] = byte(i * 31)
 	}
 	m := newManifest(t, st, "big", map[string][]byte{"usr/bin/heavy": elf})
-	conv, saved, err := ColdPass(st, m, 1000)
+	conv, saved, err := ColdPass(st, m, 1000, nil)
 	if err != nil {
 		t.Fatalf("ColdPass: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestGCProtectsDeltaBases(t *testing.T) {
 	base := bytes.Repeat([]byte("base base base base "), 2000)
 	m1 := newManifest(t, st, "a", map[string][]byte{"lib/x": base})
 	m2 := newManifest(t, st, "b", map[string][]byte{"lib/x": variant(base, 1)})
-	if _, _, err := DeltaPass(st, []*store.Manifest{m1, m2}, 64, 1<<20); err != nil {
+	if _, _, err := DeltaPass(st, []*store.Manifest{m1, m2}, 64, 1<<20, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := GCAll(st); err != nil {

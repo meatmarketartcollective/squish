@@ -245,6 +245,31 @@ func (s *Store) ReadBlob(hash string) ([]byte, error) {
 	return DecodeAll(comp)
 }
 
+// ReadBlobPrefix reads at most n plain bytes of a raw blob without
+// loading the whole thing: the blob file is streamed through the zstd
+// decoder and decoding stops after n bytes.
+func (s *Store) ReadBlobPrefix(hash string, n int64) ([]byte, error) {
+	f, err := os.Open(s.blobPath(hash))
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	dec, err := zstd.NewReader(f, decOpts()...)
+	if err != nil {
+		return nil, err
+	}
+	defer dec.Close()
+	buf := make([]byte, n)
+	r, err := io.ReadFull(dec, buf)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return buf[:r], nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return buf, nil
+}
+
 func (s *Store) BlobSize(hash string) (int64, error) {
 	fi, err := os.Stat(s.blobPath(hash))
 	if err != nil {

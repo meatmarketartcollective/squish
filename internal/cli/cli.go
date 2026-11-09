@@ -92,6 +92,8 @@ func Run(args []string) error {
 		return cmdRepack(rest)
 	case "delta":
 		return cmdDelta(rest)
+	case "autotune":
+		return cmdAutotune(rest)
 	case "cold":
 		return cmdCold(rest)
 	case "reclaim":
@@ -296,6 +298,54 @@ func openStoreAt(sdir string) (*store.Store, error) {
 	return store.Open(sdir)
 }
 
+func cmdAutotune(args []string) error {
+	fs := flag.NewFlagSet("autotune", flag.ExitOnError)
+	sdir := fs.String("store", "", "store root")
+	rollMB := fs.Int("roll-mb", 128, "raw MiB per stream frame when applying")
+	sortMode := fs.String("sort", "path", "sweep order when applying")
+	sampleKB := fs.Int("sample-kb", 128, "plain bytes probed per blob")
+	apply := fs.Bool("apply", false, "run the winning pipeline after reporting")
+	fs.Parse(flagsFirst(fs, args))
+	st, err := openStoreAt(*sdir)
+	if err != nil {
+		return err
+	}
+	names, err := st.ListManifests()
+	if err != nil {
+		return err
+	}
+	var ms []*store.Manifest
+	for _, n := range names {
+		m, err := st.LoadManifest(n)
+		if err != nil {
+			return err
+		}
+		ms = append(ms, m)
+	}
+	plan, err := ops.Autotune(st, ms, ops.TuneOpts{SampleBytes: *sampleKB << 10})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("store %d B, %d unique blobs (%d B raw), %d versioned paths\n", plan.StoreBytes, plan.UniqueFiles, plan.UniqueBytes, plan.VersionedPaths)
+	fmt.Printf("classes: window %d blobs (%d B) rate %.1f%% | cold %d ELFs (%d B) standalone %.1f%% | delta %d targets (%d B) out %.1f%%, %d bases (%d B) stay raw\n",
+		plan.WindowFiles, plan.WindowBytes, plan.WindowRate*100, plan.ColdFiles, plan.ColdBytes, plan.ColdRate*100, plan.DeltaFiles, plan.DeltaBytes, plan.DeltaRate*100, plan.BaseFiles, plan.BaseBytes)
+	for _, cand := range plan.Candidates {
+		mark := ""
+		if cand.Name == plan.Winner {
+			mark = "  <- winner"
+		}
+		fmt.Printf("  %-18s %12d B%s\n", cand.Name, cand.Bytes, mark)
+	}
+	if *apply {
+		final, err := ops.ApplyPlan(st, ms, plan, int64(*rollMB)<<20, *sortMode)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("applied %s: store now %d B\n", plan.Winner, final)
+	}
+	return nil
+}
+
 func cmdDelta(args []string) error {
 	fs := flag.NewFlagSet("delta", flag.ExitOnError)
 	sdir := fs.String("store", "", "store root")
@@ -324,7 +374,7 @@ func cmdDelta(args []string) error {
 		}
 		ms = append(ms, m)
 	}
-	conv, saved, err := ops.DeltaPass(st, ms, int64(*minFile), int64(*maxFile))
+	conv, saved, err := ops.DeltaPass(st, ms, int64(*minFile), int64(*maxFile), nil)
 	if err != nil {
 		return err
 	}
@@ -348,7 +398,7 @@ func cmdCold(args []string) error {
 	if err != nil {
 		return err
 	}
-	conv, saved, err := ops.ColdPass(st, m, int64(*minSize))
+	conv, saved, err := ops.ColdPass(st, m, int64(*minSize), nil)
 	if err != nil {
 		return err
 	}
